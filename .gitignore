@@ -1,0 +1,33 @@
+__pycache__/
+*.py[cod]
+
+# Machine-local settings
+hand_drive_tool_settings.json
+
+# Full-resolution screenshot originals (README uses the .jpg versions)
+Screenshots/sunburst2_lhd.png
+Screenshots/sunburst2_rhd.png
+Screenshots/sunburst2_rhd_lhd.png
+Screenshots/sunburst_sunset_pair.png
+
+# Generated project/build output
+handedness_conversion_projects/
+build/
+dist/
+release/*
+!release/*.zip
+*.spec.bak
+
+# Generated converted mods may contain or derive from BeamNG or third-party assets.
+examples/converted_mods/*.zip
+*.blend
+*.blend1
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Editor metadata
+.idea/
+.vscode/

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="160" viewBox="0 0 512 160">
+  <defs>
+    <filter id="shadow" x="-10%" y="-20%" width="130%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#354246"/>
+      <stop offset="1" stop-color="#263136"/>
+    </linearGradient>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <path d="M48 22 L500 22 L500 138 L12 138 Z" fill="url(#panel)"/>
+
+    <path d="M52 26 L496 26 L496 40 L47 40 Z" fill="#ffffff" opacity="0.055"/>
+    <path d="M18 122 L500 122 L500 138 L12 138 Z" fill="#000000" opacity="0.12"/>
+
+    <path d="M42 22 L77 22 L42 138 L7 138 Z" fill="#ff6a00"/>
+    <path d="M77 22 L89 22 L54 138 L42 138 Z" fill="#ff8a1f" opacity="0.6"/>
+    <path d="M89 22 L103 22 L68 138 L54 138 Z" fill="#1d2528" opacity="0.5"/>
+
+    <text x="121" y="108"
+          font-family="Arial, Helvetica, DejaVu Sans, sans-serif"
+          font-size="82"
+          font-weight="800"
+          font-style="italic"
+          fill="#000000"
+          opacity="0.18"
+          letter-spacing="2">HDC</text>
+
+    <text x="118" y="105"
+          font-family="Arial, Helvetica, DejaVu Sans, sans-serif"
+          font-size="82"
+          font-weight="800"
+          font-style="italic"
+          fill="#f3f6f7"
+          letter-spacing="2">HDC</text>
+  </g>
+</svg>
