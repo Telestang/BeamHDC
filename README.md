@@ -45,7 +45,7 @@ The tool is new. It has been working well in my own testing, but there may be is
 7. Use the in-app preview or Blender preview to inspect alignment.
 8. When the preview looks right, set the BeamNG mods folder and click `Build + Install`.
 
-Enjoying driving from the other side? You can support development on [Ko-fi](https://ko-fi.com/telestang).
+Enjoying driving from the other side? Star the repo to help other people find it, or support development on [Ko-fi](https://ko-fi.com/telestang).
 
 ## Requirements
 
@@ -78,6 +78,18 @@ pip install -r requirements.txt
 `requirements.txt` covers the in-app preview (numpy, moderngl) and preview image handling (Pillow). PyInstaller is only installed by the packaging script if you build the Windows exe yourself.
 
 The tool can still build conversions without Blender configured.
+
+### Linux
+
+A user has reported the Windows build running on Linux under Wine without issue.
+
+BeamNG itself runs through Proton on Linux, so point the mods folder at the Proton prefix, for example:
+
+```text
+~/.steam/steam/steamapps/compatdata/284160/pfx/drive_c/users/steamuser/AppData/Local/BeamNG.drive/current/mods
+```
+
+Running from source natively should also work - nothing in the tool is Windows-only - but I haven't tested it. If you try it, let me know how it goes.
 
 ## In-App Preview
 
@@ -213,6 +225,8 @@ With the zip and the config file, the attempted conversion can be reproduced exa
 ## Support
 
 If this tool saved you from doing a conversion by hand, consider [buying me a coffee on Ko-fi](https://ko-fi.com/telestang). It keeps the project going.
+
+Starring the repo helps too - it's free and it makes the tool easier for others to find.
 
 ## License
 
