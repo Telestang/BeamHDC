@@ -2,7 +2,7 @@
 
 Convert any BeamNG.drive vehicle — vanilla or mod — between left-hand drive and right-hand drive.
 
-**[Download the latest release](../../releases/latest)** — extract it anywhere and run the exe.
+**[Download BeamHDC 0.1.0-alpha](https://github.com/Telestang/BeamHDC/raw/main/release/BeamHDC-0.1.0-alpha-windows.zip)** — extract it anywhere and run the exe.
 
 ![A converted RHD Sunburst next to its stock LHD counterpart](Screenshots/sunburst_sunset_pair.jpg)
 
@@ -33,7 +33,7 @@ The tool is new. It has been working well in my own testing, but there may be is
 
 ## Quick Start
 
-1. [Download the latest release](../../releases/latest), extract it, and run `BeamNG Hand Drive Converter.exe` (or run from source — see Requirements).
+1. [Download the release zip](https://github.com/Telestang/BeamHDC/raw/main/release/BeamHDC-0.1.0-alpha-windows.zip), extract it, and run `BeamNG Hand Drive Converter.exe` (or run from source — see Requirements).
 2. Select a source BeamNG vehicle `.zip`.
 3. If prompted, choose the vehicle model ID.
 4. Select the variants/trims you want to convert.
