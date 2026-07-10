@@ -6413,7 +6413,7 @@
       "viewerSolo": false
     },
     "steelwheel_01a_15x7_4l": {
-      "mode": "translate",
+      "mode": "skip",
       "mirrorSource": null,
       "translateOffset": null,
       "steeringRef": false,
