@@ -38,6 +38,10 @@ Copy-Item -LiteralPath $DistExe -Destination $StageExe -Force
 Copy-Item -LiteralPath ".\README.md" -Destination $StageDir -Force
 Copy-Item -LiteralPath ".\LICENSE" -Destination $StageDir -Force
 
+$StageExamples = Join-Path $StageDir "examples\conversion_configs"
+New-Item -ItemType Directory -Path $StageExamples -Force | Out-Null
+Copy-Item -Path ".\examples\conversion_configs\*.json" -Destination $StageExamples -Force
+
 New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 if (Test-Path $ReleaseZip) {
     Remove-Item -LiteralPath $ReleaseZip -Force
