@@ -4319,7 +4319,11 @@ def write_generated_jbeam_and_configs(
                         "translate",
                         signed_delta_for_target(target_hand, translate_magnitudes.get(mesh, 0.0)),
                     )
-                elif object_modes.get(mesh) == MODE_MIRROR:
+                elif object_modes.get(mesh) in {MODE_MIRROR, MODE_MIRROR_STRUCTURAL}:
+                    # Structural rows must carry the mirror in the jbeam pos/rot
+                    # like plain mirror rows: the engine drops the DAE node
+                    # translation for flexbodies, so a side-swap baked into the
+                    # copy's node matrix never reaches the screen.
                     flexbody_row_transforms[mesh] = ("mirror", 0.0)
             prop_row_transforms: dict[str, tuple[str, float]] = {}
             for mesh in mesh_hits:
