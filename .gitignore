@@ -10,6 +10,11 @@ Screenshots/sunburst2_rhd.png
 Screenshots/sunburst2_rhd_lhd.png
 Screenshots/sunburst_sunset_pair.png
 
+# Poster artwork (kept local only)
+Screenshots/beamhdc_poster.png
+Screenshots/poster_draft.png
+Screenshots/beamhdc_poster_generator.py
+
 # Generated project/build output
 handedness_conversion_projects/
 build/
