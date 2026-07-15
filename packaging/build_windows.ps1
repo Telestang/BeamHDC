@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha"
+    [string]$Version = "0.1.1-alpha"
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,5 +48,14 @@ if (Test-Path $ReleaseZip) {
 }
 Compress-Archive -LiteralPath $StageDir -DestinationPath $ReleaseZip -CompressionLevel Optimal
 
+# Unzipped copy for local use (git-ignored; only the zip is committed).
+$ReleaseFolder = Join-Path $ReleaseDir "BeamHDC-$Version-windows"
+if (Test-Path $ReleaseFolder) {
+    Remove-Item -LiteralPath $ReleaseFolder -Recurse -Force
+}
+Copy-Item -LiteralPath $StageDir -Destination $ReleaseFolder -Recurse -Force
+
 Write-Host "Built release archive:"
 Write-Host $ReleaseZip
+Write-Host "Unzipped folder version:"
+Write-Host $ReleaseFolder

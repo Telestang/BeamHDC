@@ -59,6 +59,10 @@ def mode_label(mode: str) -> str:
 
 MODE_CYCLE_VALUES = [core.MODE_SKIP, core.MODE_MIRROR, core.MODE_MIRROR_STRUCTURAL, core.MODE_TRANSLATE]
 
+# How long (in milliseconds) a part may sit on Mirror Structural before the
+# source-part prompt commits it. Tweak this value to change the timeout.
+STRUCTURAL_PROMPT_DELAY_MS = 1200
+
 
 RECOMMEND_SIDE_PAIRS = (
     ("_fl", "_fr"),
@@ -300,6 +304,11 @@ class HandDriveToolApp(tk.Tk):
         self.blender_var = tk.StringVar(value=str(self.settings.get("blenderExecutable") or ""))
         self.preview_output_var = tk.StringVar(value="")
         self.preview_output_to_config: dict[str, str] = {}
+        # While the Preview output dropdown list is open, the highlighted (not
+        # yet confirmed) entry hot-loads into the preview via this override.
+        self.preview_output_hover: str | None = None
+        self._preview_popdown_listbox: str | None = None
+        self._preview_hover_after: str | None = None
 
         self.viewer: ModelPreview | None = None
         self.viewer_supports_scene = False
@@ -316,6 +325,8 @@ class HandDriveToolApp(tk.Tk):
         self._build_ui()
         self.bind("<KeyPress-h>", self._toggle_selected_parts_visibility_shortcut)
         self.bind("<KeyPress-H>", self._toggle_selected_parts_visibility_shortcut)
+        self.bind("<KeyPress-space>", self._cycle_selected_part_mode_shortcut)
+        self.bind("<Shift-KeyPress-space>", lambda event: self._cycle_selected_part_mode_shortcut(event, -1))
         self.bind_all("<Button-1>", self._clear_part_filter_focus_on_click, add="+")
         self._rebuild_model_combo()
         self.after_idle(self._maximize_on_start)
@@ -752,6 +763,8 @@ class HandDriveToolApp(tk.Tk):
         self.part_tree.bind("<Motion>", self._part_motion)
         self.part_tree.bind("<Leave>", self._part_leave)
         self.part_tree.bind("<Double-1>", self._part_double_click)
+        self.part_tree.bind("<KeyPress-space>", self._cycle_selected_part_mode_shortcut)
+        self.part_tree.bind("<Shift-KeyPress-space>", lambda event: self._cycle_selected_part_mode_shortcut(event, -1))
 
     def _build_right_panel(self, parent: ttk.Frame) -> None:
         parent.rowconfigure(0, weight=1)
@@ -798,6 +811,7 @@ class HandDriveToolApp(tk.Tk):
             "<<ComboboxSelected>>",
             lambda _event: self._preview_output_selected(),
         )
+        self._wire_preview_output_popdown()
 
         buttons = ttk.Frame(parent)
         buttons.grid(row=2, column=0, sticky="ew", pady=(8, 0))
@@ -1228,7 +1242,71 @@ class HandDriveToolApp(tk.Tk):
         core.save_app_settings(self.settings)
 
     def _preview_output_selected(self) -> None:
+        self.preview_output_hover = None
         self._remember_preview_output()
+        self._schedule_mesh_scene(immediate=True)
+
+    def _wire_preview_output_popdown(self) -> None:
+        """Hot-load trims while scrolling the Preview output dropdown. The ttk
+        combobox popdown listbox is a plain Tcl widget with no Python wrapper;
+        watch it via its <Map> event and poll the highlighted entry while it
+        stays open."""
+        combo = self.preview_output_combo
+        try:
+            popdown = str(combo.tk.call("ttk::combobox::PopdownWindow", combo))
+            listbox = f"{popdown}.f.l"
+            if not int(combo.tk.call("winfo", "exists", listbox)):
+                return
+            start = combo.register(self._start_preview_hover_watch)
+            combo.tk.call("bind", listbox, "<Map>", f"+{start}")
+        except tk.TclError:
+            return
+        self._preview_popdown_listbox = listbox
+
+    def _start_preview_hover_watch(self) -> None:
+        if self._preview_hover_after is not None:
+            try:
+                self.after_cancel(self._preview_hover_after)
+            except Exception:
+                pass
+            self._preview_hover_after = None
+        self._preview_hover_poll()
+
+    def _preview_hover_poll(self) -> None:
+        self._preview_hover_after = None
+        combo = self.preview_output_combo
+        listbox = self._preview_popdown_listbox
+        mapped = False
+        label = None
+        if listbox is not None:
+            try:
+                mapped = bool(int(combo.tk.call("winfo", "ismapped", listbox)))
+                if mapped:
+                    selection = combo.tk.call(listbox, "curselection")
+                    if selection:
+                        index = selection[0] if isinstance(selection, (tuple, list)) else selection
+                        label = str(combo.tk.call(listbox, "get", index))
+            except tk.TclError:
+                mapped = False
+        if not mapped:
+            self._end_preview_hover_watch()
+            return
+        if (
+            label
+            and label in self.preview_output_to_config
+            and label != (self.preview_output_hover or self.preview_output_var.get())
+        ):
+            self.preview_output_hover = label
+            self._schedule_mesh_scene(immediate=True)
+        self._preview_hover_after = self.after(90, self._preview_hover_poll)
+
+    def _end_preview_hover_watch(self) -> None:
+        if self.preview_output_hover is None:
+            return
+        self.preview_output_hover = None
+        # Confirming fires <<ComboboxSelected>> with the same trim already
+        # loaded (snapshot-guarded no-op); after a cancel this restores the
+        # preview of the actual selection.
         self._schedule_mesh_scene(immediate=True)
 
     def _variant_detection_signature(self) -> tuple[str, ...]:
@@ -1485,6 +1563,12 @@ class HandDriveToolApp(tk.Tk):
         if self.viewer is None:
             return
         visible_ids = self._resolved_visible_ids()
+        # Selected inactive parts are temporarily injected into the GPU scene
+        # (scene.extra); show them while they stay selected. Intersecting with
+        # the live selection hides a stale extra instantly after deselection,
+        # before the scene rebuild that drops it has landed.
+        scene = getattr(self.viewer, "scene", None)
+        visible_ids |= set(getattr(scene, "extra", ()) or ()) & set(self.part_tree.selection())
         dimmed_ids = visible_ids - set(self.current_part_ids)
         self.viewer.set_visible_ids(list(visible_ids), reset=reset)
         if hasattr(self.viewer, "set_dimmed_ids"):
@@ -1503,7 +1587,9 @@ class HandDriveToolApp(tk.Tk):
         scene = getattr(self.viewer, "scene", None) if self.viewer is not None else None
         groups = getattr(scene, "groups", None)
         if groups:
-            return set(groups.keys())
+            # Temporarily-shown inactive parts (scene.extra) are in the scene
+            # but not part of the previewed trim; they are never Active.
+            return set(groups.keys()) - set(getattr(scene, "extra", ()) or ())
         # No GPU scene yet (box-viewer fallback, or the preview is still
         # building): resolve the previewed config's meshes directly. Roles are
         # cached per config on the context, so this stays cheap.
@@ -1517,6 +1603,26 @@ class HandDriveToolApp(tk.Tk):
         except Exception:
             return set()
         return {mesh for mesh in all_meshes if mesh in self.context.objects}
+
+    def _selected_extra_preview_ids(self) -> list[str]:
+        """Selected table parts NOT used by the previewed config. These get
+        temporarily injected into the GPU scene so selecting an inactive part
+        still shows it; deselecting removes it again. Active parts are never
+        in this list, so their behaviour is unchanged."""
+        if self.context is None or not hasattr(self, "part_tree"):
+            return []
+        config = self._mesh_scene_config()
+        if config is None:
+            return []
+        try:
+            _flex, _props, all_meshes = core.selected_mesh_roles(self.context, [config])
+        except Exception:
+            return []
+        return sorted(
+            object_id
+            for object_id in self.part_tree.selection()
+            if object_id in self.context.objects and object_id not in all_meshes
+        )
 
     def _refresh_active_cells(self) -> None:
         """Update the parts table Active (Y/N) column for every displayed row to
@@ -1532,8 +1638,15 @@ class HandDriveToolApp(tk.Tk):
             self.auto_delta_var.set("")
             return
         auto = core.auto_delta_magnitude(self.context, self.conversion)
-        actual = core.delta_magnitude(self.context, self.conversion)
-        self.auto_delta_var.set(f"{fmt_float(auto)} (using {fmt_float(actual)} for builds)")
+        source_refs = core.auto_delta_source_refs(self.context, self.conversion)
+        if source_refs:
+            names = ", ".join(self._part_display_name(object_id) for object_id in source_refs)
+            source = f"found using {names}"
+        else:
+            # No steering ref selected (or the selected one has no usable
+            # off-center X), so the auto delta is just its default.
+            source = "no steering ref found"
+        self.auto_delta_var.set(f"{fmt_float(auto)} ({source})")
 
     def _update_detail(self) -> None:
         if self.context is None:
@@ -2206,7 +2319,7 @@ class HandDriveToolApp(tk.Tk):
         self.structural_prompt_previous_mode = (
             previous_mode if previous_mode in MODE_CYCLE_VALUES else core.MODE_SKIP
         )
-        self.structural_prompt_after_id = self.after(2000, self._trigger_structural_prompt)
+        self.structural_prompt_after_id = self.after(STRUCTURAL_PROMPT_DELAY_MS, self._trigger_structural_prompt)
         self.status_var.set(
             f"Mirror Structural selected for {self._part_display_name(object_id)}; choose a source to complete it"
         )
@@ -2442,6 +2555,43 @@ class HandDriveToolApp(tk.Tk):
             )
         else:
             self.status_var.set(f"Toggled visibility for {len(selected)} selected part(s)")
+        return "break"
+
+    def _cycle_selected_part_mode_shortcut(self, _event: tk.Event, direction: int = 1) -> str | None:
+        focus = self.focus_get()
+        if focus is not None and focus.winfo_class() in {
+            "Entry",
+            "TEntry",
+            "Text",
+            "Combobox",
+            "TCombobox",
+            "Spinbox",
+            "TSpinbox",
+            "Button",
+            "TButton",
+            "Checkbutton",
+            "TCheckbutton",
+            "Radiobutton",
+            "TRadiobutton",
+        }:
+            return None
+        if self.context is None:
+            return None
+        item = self.part_tree.focus()
+        if not item or not self.part_tree.exists(item) or item not in self.context.objects:
+            selected = [
+                object_id
+                for object_id in self.part_tree.selection()
+                if self.part_tree.exists(object_id) and object_id in self.context.objects
+            ]
+            if len(selected) != 1:
+                return None
+            item = selected[0]
+        self._cycle_part_mode(item, direction)
+        mode = str(self._get_part_setting(item, "mode", core.MODE_SKIP))
+        if mode != core.MODE_MIRROR_STRUCTURAL:
+            # Mirror Structural sets its own "choose a source" status message.
+            self.status_var.set(f"{self._part_display_name(item)}: {mode_label(mode)}")
         return "break"
 
     def _part_settings(self, object_id: str) -> dict[str, object]:
@@ -2737,7 +2887,9 @@ class HandDriveToolApp(tk.Tk):
         return None
 
     def _mesh_scene_config(self) -> str | None:
-        label = self.preview_output_var.get().strip()
+        # The dropdown's highlighted-but-unconfirmed entry wins while the
+        # list is open, so trims hot-load as you scroll through them.
+        label = (self.preview_output_hover or self.preview_output_var.get()).strip()
         config = self.preview_output_to_config.get(label)
         if config:
             return config
@@ -2762,7 +2914,17 @@ class HandDriveToolApp(tk.Tk):
                 if isinstance(settings, dict):
                     settings.pop("viewerVisible", None)
                     settings.pop("viewerSolo", None)
-        return json.dumps({"config": config, "conversion": conversion}, sort_keys=True)
+        return json.dumps(
+            {
+                "config": config,
+                "conversion": conversion,
+                # Selected-but-inactive parts are injected into the scene, so
+                # the scene must rebuild when that set changes (and only then;
+                # selection moves between active parts leave it empty/equal).
+                "extra": self._selected_extra_preview_ids(),
+            },
+            sort_keys=True,
+        )
 
     def _schedule_mesh_scene(self, *, immediate: bool = False) -> None:
         if self.context is None or not self.viewer_supports_scene:
@@ -2799,7 +2961,10 @@ class HandDriveToolApp(tk.Tk):
         conversion_copy = json.loads(json.dumps(self.conversion, default=str))
         self.viewer.set_message(f"building preview: {config}...")
         self.mesh_scene_running = True
-        future = self.part_resolver.submit(self._mesh_scene_worker, context, conversion_copy, config)
+        extra_meshes = tuple(self._selected_extra_preview_ids())
+        future = self.part_resolver.submit(
+            self._mesh_scene_worker, context, conversion_copy, config, extra_meshes
+        )
         future.add_done_callback(
             lambda completed, current_seq=seq, current_snapshot=snapshot: self.worker_queue.put(
                 ("mesh_scene_done", (current_seq, current_snapshot, completed))
@@ -2811,12 +2976,14 @@ class HandDriveToolApp(tk.Tk):
         context: core.VehicleContext,
         conversion: dict[str, object],
         config_name: str,
+        extra_meshes: tuple[str, ...] = (),
     ):
         payload = core.full_vehicle_preview_payload(
             context,
             conversion,
             config_name,
             context.project_dir / "blender_preview",
+            extra_meshes=extra_meshes,
         )
         cache_dir = context.project_dir / "blender_preview" / "dae_cache" / "mesh_cache"
         return mesh_preview.build_scene(payload, cache_dir)

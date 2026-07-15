@@ -58,6 +58,12 @@ MODE_MIRROR = "mirror"
 MODE_MIRROR_STRUCTURAL = "mirrorStructural"
 MODE_TRANSLATE = "translate"
 MODE_CHOICES = (MODE_SKIP, MODE_MIRROR, MODE_MIRROR_STRUCTURAL, MODE_TRANSLATE)
+
+# Meshes placed further than this from the vehicle origin are treated as
+# deliberately hidden (mods "remove" unwanted meshes by offsetting them
+# thousands of km away) and are left out of previews so they cannot wreck
+# the camera framing. Keep in sync with FAR_LIMIT in mesh_preview.py.
+PREVIEW_FAR_LIMIT = 100.0
 NUMBER_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 STEERING_NAME_EXCLUDES = (
     "airbag",
@@ -336,11 +342,98 @@ def list_dae_objects_for_path(path: Path) -> dict[str, DaeObject]:
     return dae_objects_from_tree(ET.parse(path), str(path), dae_source_zip=None)
 
 
+_game_common_zips_cache: list[Path] | None = None
+
+
+def beamng_game_common_zips() -> list[Path]:
+    """The game install's content/vehicles/common.zip. Mod zips live in the
+    user's mods folder with no sibling common.zip, yet routinely reference
+    vanilla wheels/tires/props from vehicles/common - without this lookup
+    those parts have no jbeam bodies and no DAE geometry. Candidates come from
+    the app settings' recently opened game folders and from Steam's install
+    metadata (registry + libraryfolders.vdf). Cached per process."""
+    global _game_common_zips_cache
+    if _game_common_zips_cache is not None:
+        return _game_common_zips_cache
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(candidate: Path) -> None:
+        try:
+            resolved = str(candidate.resolve(strict=False)).lower()
+        except OSError:
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        if candidate.is_file():
+            found.append(candidate)
+
+    # Folders vehicles were opened from before; the game's content folder is
+    # recorded here as soon as any vanilla vehicle has been opened.
+    try:
+        raw = json.loads(APP_SETTINGS_PATH.read_text(encoding="utf-8"))
+        folders = [raw.get("lastVehicleZipFolder")]
+        recents = raw.get("recentVehicles")
+        if isinstance(recents, list):
+            for entry in recents:
+                if isinstance(entry, dict) and entry.get("zip"):
+                    folders.append(str(Path(str(entry["zip"])).parent))
+        for folder in folders:
+            if folder:
+                add(Path(str(folder)) / "common.zip")
+    except Exception:
+        pass
+
+    # Steam installs, including secondary library folders on other drives.
+    try:
+        steam_roots: list[Path] = []
+        if sys.platform == "win32":
+            import winreg
+
+            for hive, key, value_name in (
+                (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+            ):
+                try:
+                    with winreg.OpenKey(hive, key) as handle:
+                        value, _kind = winreg.QueryValueEx(handle, value_name)
+                    steam_roots.append(Path(str(value)))
+                except OSError:
+                    continue
+        for root in list(steam_roots):
+            try:
+                text = (root / "steamapps" / "libraryfolders.vdf").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                continue
+            for match in re.finditer(r'"path"\s+"((?:[^"\\]|\\.)*)"', text):
+                steam_roots.append(Path(match.group(1).replace("\\\\", "\\")))
+        for root in steam_roots:
+            add(root / "steamapps" / "common" / "BeamNG.drive" / "content" / "vehicles" / "common.zip")
+    except Exception:
+        pass
+
+    _game_common_zips_cache = found
+    return found
+
+
 def common_zip_candidates(source_zip: Path) -> list[Path]:
     candidates = [source_zip]
+    resolved: set[str] = {str(source_zip.resolve(strict=False)).lower()}
+
+    def add(candidate: Path) -> None:
+        key = str(candidate.resolve(strict=False)).lower()
+        if key not in resolved:
+            resolved.add(key)
+            candidates.append(candidate)
+
     sibling_common = source_zip.parent / "common.zip"
-    if sibling_common.exists() and sibling_common.resolve(strict=False) != source_zip.resolve(strict=False):
-        candidates.append(sibling_common)
+    if sibling_common.exists():
+        add(sibling_common)
+    for game_common in beamng_game_common_zips():
+        add(game_common)
     return candidates
 
 
@@ -2521,6 +2614,31 @@ def is_default_steering_ref(object_id: str, obj: DaeObject) -> bool:
     return abs(obj.x) > 0.05 and steering_ref_score(object_id, obj) >= 25
 
 
+def keep_single_steering_ref(context: VehicleContext, parts: dict[str, object]) -> None:
+    """The tool works with exactly ONE steering reference (the GUI enforces
+    this on click); when several part settings are flagged, keep the
+    best-scoring one (same ordering as likely_steering_ref_ids) and clear
+    the rest in place."""
+    refs = [
+        object_id
+        for object_id, settings in parts.items()
+        if isinstance(settings, dict) and settings.get("steeringRef")
+    ]
+    if len(refs) <= 1:
+        return
+
+    def rank(object_id: str) -> tuple[int, int, float, str]:
+        obj = context.objects.get(object_id)
+        if obj is None:
+            return (1, 0, 0.0, object_id)
+        return (0, -steering_ref_score(object_id, obj), -abs(obj.x), object_id)
+
+    best = min(refs, key=rank)
+    for object_id in refs:
+        if object_id != best:
+            parts[object_id]["steeringRef"] = False
+
+
 def likely_steering_ref_ids(
     context: VehicleContext,
     used_meshes: set[str] | None = None,
@@ -2726,6 +2844,9 @@ def default_part_settings(context: VehicleContext) -> dict[str, dict[str, object
             "viewerVisible": True,
             "viewerSolo": False,
         }
+    # Vehicles often index several confident candidates (steering wheel
+    # variants, columns, ...); auto-detect must flag only the best one.
+    keep_single_steering_ref(context, settings)
     return settings
 
 
@@ -2793,6 +2914,18 @@ def merge_with_current_inventory(context: VehicleContext, data: dict[str, object
 
     old_parts = data.get("parts", {})
     if isinstance(old_parts, dict):
+        # The save's steering-ref choice wins over the auto-detected default:
+        # clear the default flag(s) whenever the save carries a usable ref, so
+        # the two can never combine into multiple refs.
+        saved_has_ref = any(
+            isinstance(settings, dict)
+            and settings.get("steeringRef")
+            and object_id in merged["parts"]
+            for object_id, settings in old_parts.items()
+        )
+        if saved_has_ref:
+            for settings in merged["parts"].values():
+                settings["steeringRef"] = False
         for object_id, settings in old_parts.items():
             if object_id in merged["parts"] and isinstance(settings, dict):
                 merged["parts"][object_id].update(
@@ -2809,6 +2942,8 @@ def merge_with_current_inventory(context: VehicleContext, data: dict[str, object
                         if key in settings
                     }
                 )
+        # Old saves written before single-ref enforcement may carry several.
+        keep_single_steering_ref(context, merged["parts"])
 
     old_delta = data.get("delta", {})
     if isinstance(old_delta, dict):
@@ -2852,6 +2987,17 @@ def import_matching_conversion(
                 counts["variantSkipped"] += 1
 
     if isinstance(imported_parts, dict):
+        # Same single-ref rule as merge_with_current_inventory: an imported
+        # steering ref replaces the current one instead of joining it.
+        imported_has_ref = any(
+            isinstance(settings, dict)
+            and settings.get("steeringRef")
+            and object_id in out["parts"]
+            for object_id, settings in imported_parts.items()
+        )
+        if imported_has_ref:
+            for settings in out["parts"].values():
+                settings["steeringRef"] = False
         for object_id, settings in imported_parts.items():
             if object_id in out["parts"] and isinstance(settings, dict):
                 out["parts"][object_id].update(
@@ -2871,6 +3017,7 @@ def import_matching_conversion(
                 counts["partImported"] += 1
             else:
                 counts["partSkipped"] += 1
+        keep_single_steering_ref(context, out["parts"])
     return out, counts
 
 
@@ -3293,11 +3440,21 @@ def selected_steering_refs(conversion: dict[str, object]) -> list[str]:
     ]
 
 
+def auto_delta_source_refs(context: VehicleContext, conversion: dict[str, object]) -> list[str]:
+    """Steering-ref parts that actually contribute to the auto delta (indexed
+    objects with a usable off-center X). Empty means the auto delta falls back
+    to its default of 0."""
+    return [
+        object_id
+        for object_id in selected_steering_refs(conversion)
+        if object_id in context.objects and abs(context.objects[object_id].x) > 0.05
+    ]
+
+
 def auto_delta_magnitude(context: VehicleContext, conversion: dict[str, object]) -> float:
     offsets = [
         abs(context.objects[object_id].x)
-        for object_id in selected_steering_refs(conversion)
-        if object_id in context.objects and abs(context.objects[object_id].x) > 0.05
+        for object_id in auto_delta_source_refs(context, conversion)
     ]
     offset = median_value(offsets)
     if offset is None:
@@ -4679,6 +4836,7 @@ def full_vehicle_preview_payload(
     conversion: dict[str, object],
     config_name: str,
     run_dir: Path,
+    extra_meshes: Iterable[str] = (),
 ) -> dict[str, object]:
     """Full-vehicle Blender preview of one config after conversion.
 
@@ -4686,7 +4844,11 @@ def full_vehicle_preview_payload(
     matrix computed with the same engine-verified functions the build uses;
     geometry is referenced from the ORIGINAL DAE files by node name, so the
     preview needs no build output and no generated meshes. Mirrored rows use
-    negative-determinant matrices (fine for preview rendering)."""
+    negative-determinant matrices (fine for preview rendering).
+
+    extra_meshes are object ids NOT used by this config that should still be
+    included (the GUI passes selected-but-inactive parts so they can be shown
+    temporarily); their instances carry \"extra\": True."""
     if config_name not in context.variants:
         raise RuntimeError(f"Unknown config {config_name!r}")
     target_hand = variant_target_hand(context, conversion, config_name)
@@ -4721,6 +4883,17 @@ def full_vehicle_preview_payload(
             dae_entries.append({"zip": str(zip_path), "dae_path": obj.dae_path})
         return index
 
+    def final_matrix(mesh: str, mode: str, world: list[list[float]]) -> list[list[float]]:
+        if target_hand is None or mode not in convertible:
+            return world
+        if mode == MODE_TRANSLATE:
+            delta = signed_delta_for_target(
+                target_hand,
+                part_translate_magnitude(context, conversion, mesh),
+            )
+            return multiply_matrix(translation_matrix((delta, 0.0, 0.0)), world)
+        return multiply_matrix(mirror, world)
+
     for part_id in sorted(str(part) for part in selected.get("parts", set())):
         raw_options = part_slot_options.get(part_id, ()) if isinstance(part_slot_options, dict) else ()
         opts = tuple(str(item) for item in raw_options if item) if isinstance(raw_options, (list, tuple)) else ()
@@ -4753,16 +4926,9 @@ def full_vehicle_preview_payload(
                     # absent from this config never render
                     skipped.setdefault(mesh, "placement unresolved (inactive row?)")
                     continue
-                if target_hand is None or mode not in convertible:
-                    final = world
-                elif mode == MODE_TRANSLATE:
-                    delta = signed_delta_for_target(
-                        target_hand,
-                        part_translate_magnitude(context, conversion, mesh),
-                    )
-                    final = multiply_matrix(translation_matrix((delta, 0.0, 0.0)), world)
-                else:
-                    final = multiply_matrix(mirror, world)
+                if math.hypot(world[0][3], world[1][3], world[2][3]) > PREVIEW_FAR_LIMIT:
+                    skipped.setdefault(mesh, "placed far outside the vehicle (hidden by its jbeam)")
+                    continue
                 instances.append(
                     {
                         "dae": dae_ref(obj),
@@ -4772,10 +4938,66 @@ def full_vehicle_preview_payload(
                         "part": part_id,
                         "kind": kind,
                         "mode": mode if target_hand is not None else MODE_SKIP,
-                        "matrix": matrix4_flat(final),
+                        "matrix": matrix4_flat(final_matrix(mesh, mode, world)),
                         "stock_matrix": matrix4_flat(world),
                     }
                 )
+
+    # Temporarily-shown parts that are NOT in this config's part tree: find
+    # each mesh's flexbody/prop row in any part of the vehicle and place it
+    # with the same helpers, falling back to its indexed position when the
+    # row cannot be resolved outside its own config.
+    extra_wanted = {str(mesh) for mesh in extra_meshes or ()}
+    extra_wanted -= {str(inst["mesh"]) for inst in instances}
+    extra_rows: dict[str, tuple[str, str, str]] = {}
+    if extra_wanted:
+        for extra_part_id in context.part_body_index:
+            if len(extra_rows) == len(extra_wanted):
+                break
+            for kind, array_key in (("flex", "flexbodies"), ("prop", "props")):
+                array_text = part_named_array_for_context(context, extra_part_id, array_key)
+                if not array_text:
+                    continue
+                for row in iter_active_top_level_rows(array_text):
+                    mesh = flexbody_row_mesh(row) if kind == "flex" else prop_row_mesh(row)
+                    if mesh in extra_wanted and mesh not in extra_rows:
+                        extra_rows[mesh] = (extra_part_id, kind, row)
+    for mesh in sorted(extra_wanted):
+        mode = object_modes.get(mesh, MODE_SKIP)
+        geometry_mesh = structural.get(mesh, mesh) if mode == MODE_MIRROR_STRUCTURAL else mesh
+        obj = context.objects.get(geometry_mesh)
+        if obj is None or not obj.dae_path:
+            skipped.setdefault(mesh, "no DAE geometry indexed")
+            continue
+        extra_part_id, kind, row = extra_rows.get(mesh, ("", "flex", ""))
+        world = None
+        if row:
+            if kind == "flex":
+                world = flexbody_row_source_matrix(row)
+            else:
+                rotation_override, _source = prop_rest_rotation_override(row, node_positions)
+                world = prop_row_world_matrix(
+                    row, node_positions, context.mesh_pivots.get(mesh), (), rotation_override
+                )
+        if world is None:
+            world = translation_matrix(context.mesh_pivots.get(mesh) or (obj.x, obj.y, obj.z))
+        if math.hypot(world[0][3], world[1][3], world[2][3]) > PREVIEW_FAR_LIMIT:
+            skipped.setdefault(mesh, "placed far outside the vehicle (hidden by its jbeam)")
+            continue
+        instances.append(
+            {
+                "dae": dae_ref(obj),
+                "node": obj.id,
+                "node_names": preview_node_names(obj),
+                "mesh": mesh,
+                "part": extra_part_id,
+                "kind": kind,
+                "mode": mode if target_hand is not None else MODE_SKIP,
+                "matrix": matrix4_flat(final_matrix(mesh, mode, world)),
+                "stock_matrix": matrix4_flat(world),
+                "extra": True,
+            }
+        )
 
     cache_dir = context.project_dir / "blender_preview" / "dae_cache"
     for entry in dae_entries:

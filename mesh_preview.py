@@ -40,6 +40,11 @@ DIMMED_OPACITY = 0.25
 # A left click may wobble a couple of pixels; anything past this (in canvas
 # pixels) is treated as an orbit drag, not a pick.
 PICK_MOVE_THRESHOLD = 4
+# Geometry whose placement lands further than this from the origin is a
+# hide-it-far-away modding hack; it is dropped so one hidden mesh cannot
+# destroy the auto-framed camera. Keep in sync with PREVIEW_FAR_LIMIT in
+# beamng_hand_drive_core.py (mesh_preview stays import-independent of core).
+FAR_LIMIT = 100.0
 # BeamNG vehicle axes commonly place +X to the left and -Y to the front.
 # The old 2.4 rad default looked from +X/+Y, so mirror that around +X.
 DEFAULT_YAW = math.pi - 2.4
@@ -298,6 +303,9 @@ class SceneData:
     modes: dict[str, str]
     label: str = ""
     skipped: list[str] = field(default_factory=list)
+    # Meshes injected on top of the config's own part set (selected-but-
+    # inactive parts shown temporarily); excluded from "active" bookkeeping.
+    extra: set[str] = field(default_factory=set)
 
     @property
     def triangle_count(self) -> int:
@@ -328,6 +336,7 @@ def build_scene(payload: dict, cache_dir: Path | None = None) -> SceneData:
     groups: dict[str, list[tuple[int, int, int, int]]] = {}
     modes: dict[str, str] = {}
     skipped: list[str] = []
+    extra: set[str] = set()
     vert_base = 0
     tri_base = 0
 
@@ -371,6 +380,8 @@ def build_scene(payload: dict, cache_dir: Path | None = None) -> SceneData:
         mode = str(inst.get("mode") or "skip")
         mesh_name = str(inst.get("mesh"))
         modes.setdefault(mesh_name, mode)
+        if inst.get("extra"):
+            extra.add(mesh_name)
         try:
             palette_index = MODE_PALETTE_ORDER.index(mode)
         except ValueError:
@@ -382,6 +393,11 @@ def build_scene(payload: dict, cache_dir: Path | None = None) -> SceneData:
             verts, triangles = geometry.geoms[gid]
             full_conv = matrix_conv @ node_matrix
             full_stock = matrix_stock @ node_matrix
+            if (
+                np.linalg.norm(full_conv[:3, 3]) > FAR_LIMIT
+                or np.linalg.norm(full_stock[:3, 3]) > FAR_LIMIT
+            ):
+                continue
             verts64 = verts.astype(np.float64)
             conv = verts64 @ full_conv[:3, :3].T + full_conv[:3, 3]
             stock = verts64 @ full_stock[:3, :3].T + full_stock[:3, 3]
@@ -391,8 +407,13 @@ def build_scene(payload: dict, cache_dir: Path | None = None) -> SceneData:
             color_ids.append(np.full(len(verts), float(palette_index), dtype=np.float32))
             vert_base += len(verts)
             tri_base += len(triangles)
+        if tri_base == inst_tri_start:
+            # every node entry was dropped (hidden far away) - no group span
+            skipped.append(mesh_name)
+            continue
         groups.setdefault(mesh_name, []).append((inst_tri_start, tri_base, inst_vert_start, vert_base))
 
+    extra &= set(groups)
     if not tris:
         empty3 = np.zeros((0, 3), dtype=np.float32)
         return SceneData(empty3, empty3, np.zeros((0, 3), dtype=np.int32), np.zeros(0, dtype=np.float32), {}, {})
@@ -406,6 +427,7 @@ def build_scene(payload: dict, cache_dir: Path | None = None) -> SceneData:
         modes=modes,
         label=str(payload.get("output_name") or payload.get("config_name") or ""),
         skipped=skipped,
+        extra=extra,
     )
 
 

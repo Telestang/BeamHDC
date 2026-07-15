@@ -57,7 +57,7 @@ Keep the GitHub repository to the tool code and conversion configs. Do not put s
 Build the non-technical-user release archive with:
 
 ```powershell
-.\packaging\build_windows.ps1 -Version 0.1.0-alpha
+.\packaging\build_windows.ps1 -Version 0.1.1-alpha
 ```
 
 Confirm the generated archive contains:
