@@ -48,14 +48,21 @@ if (Test-Path $ReleaseZip) {
 }
 Compress-Archive -LiteralPath $StageDir -DestinationPath $ReleaseZip -CompressionLevel Optimal
 
-# Unzipped copy for local use (git-ignored; only the zip is committed).
+# Unzipped copy for local use (git-ignored; only the zip is committed). The
+# zip above is the real artifact, so a locked folder (e.g. the exe is still
+# running from it) must not fail the build.
 $ReleaseFolder = Join-Path $ReleaseDir "BeamHDC-$Version-windows"
-if (Test-Path $ReleaseFolder) {
-    Remove-Item -LiteralPath $ReleaseFolder -Recurse -Force
+try {
+    if (Test-Path $ReleaseFolder) {
+        Remove-Item -LiteralPath $ReleaseFolder -Recurse -Force -ErrorAction Stop
+    }
+    Copy-Item -LiteralPath $StageDir -Destination $ReleaseFolder -Recurse -Force -ErrorAction Stop
+    $FolderNote = $ReleaseFolder
+} catch {
+    $FolderNote = "SKIPPED (in use?): $($_.Exception.Message)"
 }
-Copy-Item -LiteralPath $StageDir -Destination $ReleaseFolder -Recurse -Force
 
 Write-Host "Built release archive:"
 Write-Host $ReleaseZip
 Write-Host "Unzipped folder version:"
-Write-Host $ReleaseFolder
+Write-Host $FolderNote
