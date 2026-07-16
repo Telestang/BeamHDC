@@ -16,19 +16,21 @@ python -m py_compile beamng_hand_drive_core.py beamng_hand_drive_tool.py blender
 ## Suggested GitHub Release Notes
 
 ```text
-v0.1.0-alpha
+v0.2.0-alpha
 
-First public alpha of BeamXP (BeamNG Vehicle eXPort Services).
+BeamHDC is now BeamXP (BeamNG Vehicle eXPort Services) - the exe, data
+folder, and repository carry the new name, and existing settings and plate
+libraries migrate automatically.
 
 Highlights:
-- Visual LHD/RHD conversion workflow for BeamNG vehicle zips
-- Batch variant conversion
-- Translate, Mirror Aesthetic, and Mirror Structural part modes
-- Auto steering-side and delta helpers
-- Per-part translate offsets
-- Automatic internal camera mirroring
-- Optional Blender preview
-- Example conversion configs for Sunburst2 and Wigeon
+- Custom licence plate generation: EU, US, and JP design families with
+  fonts, colours, borders, side bands, emboss, and registration patterns
+- Front and rear background image uploads for any plate family
+- Reusable plate sets in a global library, exportable as one universal
+  plates mod
+- Plates Only trim exports alongside converted trims in one vehicle mod
+- Independent front/rear physical plate mesh selection per trim
+- Live front/rear plate preview in the editor
 
 Known limitations:
 - Severe crash deformation of some converted interior visuals may not perfectly match a hand-authored conversion
@@ -57,7 +59,7 @@ Keep the GitHub repository to the tool code and conversion configs. Do not put s
 Build the non-technical-user release archive with:
 
 ```powershell
-.\packaging\build_windows.ps1 -Version 0.1.1-alpha
+.\packaging\build_windows.ps1 -Version 0.2.0-alpha
 ```
 
 Confirm the generated archive contains:

@@ -5365,7 +5365,7 @@ def write_mod_info(root: Path, context: VehicleContext) -> None:
     source_name = conversion_source_name(context)
     info = {
         "name": f"{context.vehicle_id} BeamXP Conversion",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "authors": source_name,
         "description": (
             f"Generated BeamXP handedness and/or plate configuration overlay for {context.vehicle_id}. "
