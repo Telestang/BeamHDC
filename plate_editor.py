@@ -481,7 +481,7 @@ class PlateEditorDialog(tk.Toplevel):
         )
         ttk.Label(
             frame,
-            text="Images fill the plate (centre-cropped) and override the colour. BeamXP trim outputs use the rear settings; unchanged stock vehicles use the front ones.",
+            text="BeamXP trim outputs use the rear settings; unchanged stock vehicles use the front ones.",
         ).grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0))
         ttk.Label(frame, text="Font colour").grid(row=3, column=0, sticky="w", pady=(4, 0))
         self._color_button(frame, "eu", "textColor").grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
@@ -559,10 +559,6 @@ class PlateEditorDialog(tk.Toplevel):
         self._image_picker(frame, "background", "rearImage", "Choose rear plate background image").grid(
             row=1, column=2, sticky="ew", padx=(10, 0), pady=(4, 0)
         )
-        ttk.Label(
-            frame,
-            text="Images fill the plate (centre-cropped) and override the colour; the colour is used where no image is set.",
-        ).grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0))
         ttk.Label(frame, text="Font colour").grid(row=3, column=0, sticky="w", pady=(4, 0))
         self._color_button(frame, "us", "textColor").grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
         ttk.Label(frame, text="Text scale").grid(row=4, column=0, sticky="w", pady=(4, 0))
@@ -587,11 +583,6 @@ class PlateEditorDialog(tk.Toplevel):
         self._image_picker(frame, "background", "rearImage", "Choose rear plate background image").grid(
             row=1, column=1, sticky="ew", padx=(8, 0), pady=(4, 0)
         )
-        ttk.Label(
-            frame,
-            text="Images fill the plate (centre-cropped) and override the style background; the fields below still draw on top.",
-        ).grid(row=2, column=1, sticky="w", padx=(8, 0))
-
         ttk.Label(frame, text="Plate style").grid(row=3, column=0, sticky="w", pady=(6, 0))
         style_key = str(self.cfg["jp"].get("style") or "private")
         self.jp_style_var = tk.StringVar(value=PLATE_JP_STYLE_LABELS.get(style_key, PLATE_JP_STYLE_LABELS["private"]))
