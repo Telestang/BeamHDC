@@ -299,22 +299,23 @@ class BackgroundImageTests(unittest.TestCase):
         self.assertEqual(cfg["background"]["frontImage"], "C:/old.png")
         self.assertEqual(cfg["us"]["bgImage"], "")
 
-    def test_rear_background_falls_back_to_front_image(self) -> None:
+    def test_absent_rear_image_keeps_the_solid_rear_colour(self) -> None:
         front = self._image("front.png", (64, 32), (200, 30, 30))
         cfg = plate_generator.normalized_plate_config({"background": {"frontImage": front}})
-        rear = plate_generator._user_background(cfg, (100, 50), rear=True)
-        self.assertIsNotNone(rear)
-        self.assertEqual(rear.size, (100, 50))
-        self.assertFalse(plate_generator._rear_texture_differs(cfg))
+        self.assertIsNone(plate_generator._user_background(cfg, (100, 50), rear=True))
+        # front is an image, rear is a colour, so rear formats are required
+        self.assertTrue(plate_generator._rear_texture_differs(cfg))
 
-    def test_distinct_rear_image_requires_rear_formats(self) -> None:
+    def test_rear_format_emission_follows_image_mismatches(self) -> None:
         front = self._image("front.png", (64, 32), (200, 30, 30))
         rear = self._image("rear.png", (64, 32), (30, 30, 200))
-        cfg = plate_generator.normalized_plate_config({"background": {"frontImage": front, "rearImage": rear}})
-        self.assertTrue(plate_generator._rear_texture_differs(cfg))
-        # a rear image alone also forces rear formats (front stays a colour)
-        cfg = plate_generator.normalized_plate_config({"background": {"rearImage": rear}})
-        self.assertTrue(plate_generator._rear_texture_differs(cfg))
+        differs = plate_generator._rear_texture_differs
+        self.assertTrue(differs(plate_generator.normalized_plate_config(
+            {"background": {"frontImage": front, "rearImage": rear}})))
+        self.assertTrue(differs(plate_generator.normalized_plate_config(
+            {"background": {"rearImage": rear}})))
+        self.assertFalse(differs(plate_generator.normalized_plate_config(
+            {"background": {"frontImage": front, "rearImage": front}})))
 
     def test_background_image_scales_to_cover_and_centre_crops(self) -> None:
         from PIL import Image

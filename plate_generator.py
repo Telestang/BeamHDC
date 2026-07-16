@@ -106,8 +106,8 @@ def default_plate_config() -> dict[str, object]:
         "size": PLATE_SIZE_EU,
         "font": {"source": "default", "path": ""},
         # User-supplied background images (any family). Scaled to cover the
-        # plate canvas with the overflowing dimension centre-cropped; the
-        # rear side falls back to the front image.
+        # plate canvas with the overflowing dimension centre-cropped. Each
+        # side is independent: a side without an image uses its colour.
         "background": {"frontImage": "", "rearImage": ""},
         "border": {
             "enabled": False,
@@ -1000,15 +1000,15 @@ def _render_side_band(cfg_eu: dict[str, object], size: tuple[int, int], font_pat
 
 def _user_background(cfg: dict[str, object], size: tuple[int, int], *, rear: bool = False):
     """The user's front/rear background image scaled to cover `size` (aspect
-    preserved, overflowing dimension centre-cropped), or None when unset.
-    The rear side falls back to the front image."""
+    preserved, overflowing dimension centre-cropped), or None when that side
+    has no image. Sides are independent so an image-free side keeps its
+    solid colour."""
     from PIL import ImageOps
 
     background = cfg.get("background", {})
     if not isinstance(background, dict):
         return None
-    front = str(background.get("frontImage") or "")
-    path = (str(background.get("rearImage") or "") or front) if rear else front
+    path = str(background.get("rearImage" if rear else "frontImage") or "")
     if not path:
         return None
     side = "Rear background" if rear else "Front background"
@@ -1178,8 +1178,9 @@ def _rear_texture_differs(cfg: dict[str, object]) -> bool:
     front_image = str(background.get("frontImage") or "")
     rear_image = str(background.get("rearImage") or "")
     if front_image or rear_image:
-        # An image overrides the family colours on that side.
-        return (rear_image or front_image) != front_image
+        # An image overrides that side's colour, so any mismatch (including
+        # image on one side only) means the rear texture differs.
+        return front_image != rear_image
     if str(cfg.get("size")) != PLATE_SIZE_EU:
         return False
     eu = cfg["eu"]

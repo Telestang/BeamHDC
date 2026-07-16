@@ -217,6 +217,7 @@ class PlateEditorDialog(tk.Toplevel):
             mode_combo.pack(side="left", padx=(8, 0))
             mode_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_control_states())
 
+        self._picker_vars: dict[tuple[str, str], list[tk.StringVar]] = {}
         self.controls_frame = ttk.Frame(body)
         self.controls_frame.grid(row=1, column=0, sticky="ew")
         self.controls_frame.columnconfigure(1, weight=1)
@@ -322,19 +323,6 @@ class PlateEditorDialog(tk.Toplevel):
         self._spin(border_row, "border", "thickness", 1, 40, 1, integer=True).grid(row=0, column=6, sticky="w", padx=(4, 0))
         ttk.Label(border_row, text="Corner radius").grid(row=0, column=7, sticky="w", padx=(10, 0))
         self._spin(border_row, "border", "cornerRadius", 0, 120, 1, integer=True).grid(row=0, column=8, sticky="w", padx=(4, 0))
-
-        ttk.Label(self.controls_frame, text="Front bg image").grid(row=5, column=0, sticky="w", pady=(6, 0))
-        self._image_picker(self.controls_frame, "background", "frontImage", "Choose front plate background image").grid(
-            row=5, column=1, sticky="ew", padx=(8, 0), pady=(6, 0)
-        )
-        ttk.Label(self.controls_frame, text="Rear bg image").grid(row=6, column=0, sticky="w", pady=(4, 0))
-        self._image_picker(self.controls_frame, "background", "rearImage", "Choose rear plate background image").grid(
-            row=6, column=1, sticky="ew", padx=(8, 0), pady=(4, 0)
-        )
-        ttk.Label(
-            self.controls_frame,
-            text="Images scale to fill and centre-crop; they override the background colours. Rear falls back to the front image.",
-        ).grid(row=7, column=1, sticky="w", padx=(8, 0))
 
         self.size_frames: dict[str, ttk.Frame] = {}
         holder = ttk.LabelFrame(body, text="Plate configuration", padding=8)
@@ -451,6 +439,9 @@ class PlateEditorDialog(tk.Toplevel):
         row = ttk.Frame(parent)
         row.columnconfigure(0, weight=1)
         var = tk.StringVar(value=str(self.cfg[section].get(key) or ""))
+        # The background pickers appear in every family frame; remember the
+        # vars so switching frames can resync them from the shared config.
+        self._picker_vars.setdefault((section, key), []).append(var)
 
         def browse() -> None:
             path = filedialog.askopenfilename(
@@ -475,23 +466,29 @@ class PlateEditorDialog(tk.Toplevel):
 
     def _build_eu_frame(self, holder: ttk.LabelFrame) -> None:
         frame = ttk.Frame(holder)
-        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(2, weight=1)
         self.size_frames[plate_generator.PLATE_SIZE_EU] = frame
 
         ttk.Label(frame, text="Front background").grid(row=0, column=0, sticky="w")
         self._color_button(frame, "eu", "frontColor").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self._image_picker(frame, "background", "frontImage", "Choose front plate background image").grid(
+            row=0, column=2, sticky="ew", padx=(10, 0)
+        )
         ttk.Label(frame, text="Rear background").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._color_button(frame, "eu", "rearColor").grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        self._image_picker(frame, "background", "rearImage", "Choose rear plate background image").grid(
+            row=1, column=2, sticky="ew", padx=(10, 0), pady=(4, 0)
+        )
         ttk.Label(
             frame,
-            text="BeamXP trim outputs use this; unchanged stock vehicles use the front colour.",
-        ).grid(row=1, column=2, sticky="w", padx=(10, 0), pady=(4, 0))
-        ttk.Label(frame, text="Font colour").grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self._color_button(frame, "eu", "textColor").grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Character spacing").grid(row=3, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "eu", "spacing", -20, 60, 1, integer=True).grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+            text="Images fill the plate (centre-cropped) and override the colour. BeamXP trim outputs use the rear settings; unchanged stock vehicles use the front ones.",
+        ).grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0))
+        ttk.Label(frame, text="Font colour").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self._color_button(frame, "eu", "textColor").grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Character spacing").grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "eu", "spacing", -20, 60, 1, integer=True).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
 
-        ttk.Label(frame, text="Side band").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(frame, text="Side band").grid(row=5, column=0, sticky="w", pady=(8, 0))
         self.band_var = tk.StringVar(value=PLATE_BAND_LABELS.get(str(self.cfg["eu"].get("sideBand")), "None"))
         band_combo = ttk.Combobox(
             frame,
@@ -500,7 +497,7 @@ class PlateEditorDialog(tk.Toplevel):
             state="readonly",
             width=10,
         )
-        band_combo.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        band_combo.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
         band_combo.bind("<<ComboboxSelected>>", lambda _event: self._band_changed())
 
         # The band-specific controls live in a rebuildable child frame. Match
@@ -514,7 +511,7 @@ class PlateEditorDialog(tk.Toplevel):
             default=0,
         )
         self.band_detail = ttk.Frame(frame)
-        self.band_detail.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.band_detail.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.band_detail.columnconfigure(0, minsize=label_column_width)
         self.band_detail.columnconfigure(2, weight=1)
         self._rebuild_band_detail()
@@ -550,28 +547,52 @@ class PlateEditorDialog(tk.Toplevel):
 
     def _build_us_frame(self, holder: ttk.LabelFrame) -> None:
         frame = ttk.Frame(holder)
-        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(2, weight=1)
         self.size_frames[plate_generator.PLATE_SIZE_US] = frame
 
-        ttk.Label(frame, text="Background colour").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Front background").grid(row=0, column=0, sticky="w")
         self._color_button(frame, "us", "bgColor").grid(row=0, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(frame, text="Font colour").grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self._color_button(frame, "us", "textColor").grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Text scale").grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "us", "textScale", 0.3, 2.5, 0.05).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Horizontal text offset").grid(row=3, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "us", "textX", -0.4, 0.4, 0.01).grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Vertical text offset").grid(row=4, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "us", "textY", -0.4, 0.4, 0.01).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Character spacing").grid(row=5, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "us", "spacing", -20, 60, 1, integer=True).grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        self._image_picker(frame, "background", "frontImage", "Choose front plate background image").grid(
+            row=0, column=2, sticky="ew", padx=(10, 0)
+        )
+        ttk.Label(frame, text="Rear background").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self._image_picker(frame, "background", "rearImage", "Choose rear plate background image").grid(
+            row=1, column=2, sticky="ew", padx=(10, 0), pady=(4, 0)
+        )
+        ttk.Label(
+            frame,
+            text="Images fill the plate (centre-cropped) and override the colour; the colour is used where no image is set.",
+        ).grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0))
+        ttk.Label(frame, text="Font colour").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self._color_button(frame, "us", "textColor").grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Text scale").grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "us", "textScale", 0.3, 2.5, 0.05).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Horizontal text offset").grid(row=5, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "us", "textX", -0.4, 0.4, 0.01).grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Vertical text offset").grid(row=6, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "us", "textY", -0.4, 0.4, 0.01).grid(row=6, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Character spacing").grid(row=7, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "us", "spacing", -20, 60, 1, integer=True).grid(row=7, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
 
     def _build_jp_frame(self, holder: ttk.LabelFrame) -> None:
         frame = ttk.Frame(holder)
         frame.columnconfigure(1, weight=1)
         self.size_frames[plate_generator.PLATE_SIZE_JP] = frame
 
-        ttk.Label(frame, text="Plate style").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Front bg image").grid(row=0, column=0, sticky="w")
+        self._image_picker(frame, "background", "frontImage", "Choose front plate background image").grid(
+            row=0, column=1, sticky="ew", padx=(8, 0)
+        )
+        ttk.Label(frame, text="Rear bg image").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self._image_picker(frame, "background", "rearImage", "Choose rear plate background image").grid(
+            row=1, column=1, sticky="ew", padx=(8, 0), pady=(4, 0)
+        )
+        ttk.Label(
+            frame,
+            text="Images fill the plate (centre-cropped) and override the style background; the fields below still draw on top.",
+        ).grid(row=2, column=1, sticky="w", padx=(8, 0))
+
+        ttk.Label(frame, text="Plate style").grid(row=3, column=0, sticky="w", pady=(6, 0))
         style_key = str(self.cfg["jp"].get("style") or "private")
         self.jp_style_var = tk.StringVar(value=PLATE_JP_STYLE_LABELS.get(style_key, PLATE_JP_STYLE_LABELS["private"]))
         style_combo = ttk.Combobox(
@@ -581,7 +602,7 @@ class PlateEditorDialog(tk.Toplevel):
             state="readonly",
             width=22,
         )
-        style_combo.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        style_combo.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
 
         def style_changed(_event: object = None) -> None:
             self.cfg["jp"]["style"] = _key_for_label(
@@ -600,13 +621,13 @@ class PlateEditorDialog(tk.Toplevel):
                 widget = ttk.Entry(frame, textvariable=var, width=width)
             widget.grid(row=row, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
 
-        text_field(1, "Region", "region", plate_generator.JP_REGION_CHOICES, 12)
-        text_field(2, "Classification", "classification", None, 6)
-        text_field(3, "Kana", "kana", plate_generator.JP_KANA_CHOICES, 4)
+        text_field(4, "Region", "region", plate_generator.JP_REGION_CHOICES, 12)
+        text_field(5, "Classification", "classification", None, 6)
+        text_field(6, "Kana", "kana", plate_generator.JP_KANA_CHOICES, 4)
         ttk.Label(
             frame,
             text="The registration pattern fills the main number (e.g. ##-##).",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
     # -- behaviour ----------------------------------------------------------
 
@@ -704,6 +725,13 @@ class PlateEditorDialog(tk.Toplevel):
             return
         self.cfg["size"] = size
         self.pattern_var.set(plate_generator.active_pattern(self.cfg))
+        # Background pickers exist in every family frame over one shared
+        # config section; refresh the incoming frame's copies.
+        for (section, key), pickers in self._picker_vars.items():
+            value = str(self.cfg.get(section, {}).get(key) or "")
+            for var in pickers:
+                if var.get() != value:
+                    var.set(value)
         self._show_size_frame(size)
         self._registration = None
         self._schedule_preview()
