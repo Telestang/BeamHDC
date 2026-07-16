@@ -18,6 +18,7 @@ import beamng_hand_drive_core as core
 import plate_generator
 from model_preview import ModelPreview
 from plate_editor import PlateEditorDialog
+from plate_library import PlateLibraryDialog
 
 try:  # GPU mesh preview; the box viewer remains the fallback
     import mesh_preview
@@ -60,6 +61,13 @@ def mode_label(mode: str) -> str:
 
 
 MODE_CYCLE_VALUES = [core.MODE_SKIP, core.MODE_MIRROR, core.MODE_MIRROR_STRUCTURAL, core.MODE_TRANSLATE]
+
+BUILD_LABELS = {
+    core.BUILD_OFF: "Off",
+    core.BUILD_CONVERTED: "Converted",
+    core.BUILD_ORIGINAL: "Plates Only",
+    core.BUILD_BOTH: "Both",
+}
 
 # How long (in milliseconds) a part may sit on Mirror Structural before the
 # source-part prompt commits it. Tweak this value to change the timeout.
@@ -283,6 +291,7 @@ class HandDriveToolApp(tk.Tk):
         self.recommendation_seq = 0
         self.recommendation_modal: tk.Toplevel | None = None
         self.plate_editor_modal: PlateEditorDialog | None = None
+        self.plate_library_modal: PlateLibraryDialog | None = None
         self.recommendation_tree: ttk.Treeview | None = None
         self.recommendation_rows: dict[str, dict[str, str]] = {}
         self.structural_prompt_after_id: str | None = None
@@ -292,6 +301,10 @@ class HandDriveToolApp(tk.Tk):
         # Per-table click-to-sort state: tree -> (column id or None, descending)
         self._tree_sort: dict[ttk.Treeview, tuple[str | None, bool]] = {}
         self._tree_heading_text: dict[ttk.Treeview, dict[str, str]] = {}
+        # Treeview has no native cell editors.  Keep one temporary combobox
+        # overlay at a time and manage its popdown/focus lifecycle explicitly.
+        self._tree_combo_editor: ttk.Combobox | None = None
+        self._tree_combo_focus_after_id: str | None = None
         self.part_filter_entry: ttk.Entry | None = None
 
         self.source_var = tk.StringVar(value="No source zip loaded")
@@ -303,12 +316,14 @@ class HandDriveToolApp(tk.Tk):
         self.auto_delta_var = tk.StringVar(value="")
         self.manual_delta_enabled = tk.BooleanVar(value=False)
         self.manual_delta_var = tk.StringVar(value="")
-        self.plate_enabled_var = tk.BooleanVar(value=False)
+        self.plate_choice_var = tk.StringVar(value="Off")
+        self.plate_choice_to_id: dict[str, str] = {}
         self.mods_folder_var = tk.StringVar(value=str(self.settings.get("modsFolder") or ""))
         self.blender_var = tk.StringVar(value=str(self.settings.get("blenderExecutable") or ""))
         self.preview_output_var = tk.StringVar(value="")
         self.preview_output_to_config: dict[str, str] = {}
-        # While the Preview output dropdown list is open, the highlighted (not
+        self.preview_output_to_output: dict[str, str] = {}
+        # While the Config dropdown list is open, the highlighted (not
         # yet confirmed) entry hot-loads into the preview via this override.
         self.preview_output_hover: str | None = None
         self._preview_popdown_listbox: str | None = None
@@ -337,6 +352,7 @@ class HandDriveToolApp(tk.Tk):
         self.after(120, self._poll_worker_queue)
 
     def _on_close(self) -> None:
+        self._close_tree_combo_editor()
         self._cancel_structural_prompt()
         self.part_resolver.shutdown(wait=False, cancel_futures=True)
         self.variant_detector.shutdown(wait=False, cancel_futures=True)
@@ -503,10 +519,16 @@ class HandDriveToolApp(tk.Tk):
             tree.heading(column, command=lambda c=column, t=tree: self._sort_tree(t, c))
 
     def _sort_tree(self, tree: ttk.Treeview, column: str) -> None:
+        self._close_tree_combo_editor()
         prev_column, prev_descending = self._tree_sort.get(tree, (None, False))
         descending = column == prev_column and not prev_descending
         self._tree_sort[tree] = (column, descending)
         self._apply_tree_sort(tree)
+
+    def _scroll_tree(self, tree: ttk.Treeview, axis: str, *args: object) -> None:
+        """Close a cell overlay before moving the rows beneath it."""
+        self._close_tree_combo_editor()
+        getattr(tree, axis)(*args)
 
     @staticmethod
     def _sort_key(value: object) -> tuple[int, object]:
@@ -605,12 +627,14 @@ class HandDriveToolApp(tk.Tk):
         left.columnconfigure(0, weight=1)
         left.rowconfigure(1, weight=0)
         left.rowconfigure(3, weight=1)
-        main.add(left, weight=1)
+        # Keep the tables at their requested width and give spare horizontal
+        # space to the ModernGL preview. The sash remains user-adjustable.
+        main.add(left, weight=0)
 
         right = ttk.Frame(main)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
-        main.add(right, weight=10)
+        main.add(right, weight=1)
 
         self._build_variant_panel(left)
         self._build_part_panel(left)
@@ -626,10 +650,10 @@ class HandDriveToolApp(tk.Tk):
         header = ttk.Frame(parent)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         ttk.Label(header, text="Variants").pack(side="left")
-        ttk.Button(header, text="Clear Used", command=lambda: self._set_all_variants_selected(False)).pack(
+        ttk.Button(header, text="Clear Builds", command=lambda: self._set_all_variants_selected(False)).pack(
             side="right"
         )
-        ttk.Button(header, text="Use All", command=lambda: self._set_all_variants_selected(True)).pack(
+        ttk.Button(header, text="Convert All", command=lambda: self._set_all_variants_selected(True)).pack(
             side="right",
             padx=(0, 6),
         )
@@ -638,25 +662,25 @@ class HandDriveToolApp(tk.Tk):
         frame.grid(row=1, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
-        columns = ("selected", "config", "display", "detected", "override", "plate", "output")
+        columns = ("build", "config", "display", "stock_hand", "plate", "front_plate", "rear_plate")
         self.variant_tree = ttk.Treeview(frame, columns=columns, show="headings", height=8, selectmode="browse")
         headings = {
-            "selected": "Use",
+            "build": "Build",
             "config": "Config",
             "display": "Display Name",
-            "detected": "Detected",
-            "override": "Override",
+            "stock_hand": "Stock drive side",
             "plate": "Plates",
-            "output": "Output",
+            "front_plate": "Front plate",
+            "rear_plate": "Rear plate",
         }
         widths = {
-            "selected": 54,
+            "build": 88,
             "config": 130,
             "display": 260,
-            "detected": 80,
-            "override": 92,
-            "plate": 76,
-            "output": 160,
+            "stock_hand": 110,
+            "plate": 120,
+            "front_plate": 94,
+            "rear_plate": 94,
         }
         for col in columns:
             self.variant_tree.heading(
@@ -668,17 +692,32 @@ class HandDriveToolApp(tk.Tk):
                 col,
                 width=widths[col],
                 minwidth=48,
-                stretch=col in {"display", "output"},
-                anchor="center" if col == "selected" else "w",
+                stretch=col == "display",
+                anchor="w",
             )
         self._register_tree_headings(self.variant_tree, headings)
-        yscroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=self.variant_tree.yview)
-        self.variant_tree.configure(yscrollcommand=yscroll.set)
+        yscroll = ttk.Scrollbar(
+            frame,
+            orient=tk.VERTICAL,
+            command=lambda *args: self._scroll_tree(self.variant_tree, "yview", *args),
+        )
+        xscroll = ttk.Scrollbar(
+            frame,
+            orient=tk.HORIZONTAL,
+            command=lambda *args: self._scroll_tree(self.variant_tree, "xview", *args),
+        )
+        self.variant_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
         self.variant_tree.grid(row=0, column=0, sticky="nsew")
         yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
         self._configure_tree_rows(self.variant_tree)
         self.variant_tree.bind("<Button-1>", self._variant_click)
         self.variant_tree.bind("<Double-1>", self._variant_double_click)
+        self.variant_tree.bind("<MouseWheel>", lambda _event: self._close_tree_combo_editor(), add="+")
+        self.variant_tree.bind("<Shift-MouseWheel>", lambda _event: self._close_tree_combo_editor(), add="+")
+        self.variant_tree.bind("<Button-4>", lambda _event: self._close_tree_combo_editor(), add="+")
+        self.variant_tree.bind("<Button-5>", lambda _event: self._close_tree_combo_editor(), add="+")
+        self.variant_tree.bind("<Configure>", lambda _event: self._close_tree_combo_editor(), add="+")
 
     def _build_part_panel(self, parent: ttk.Frame) -> None:
         header = ttk.Frame(parent)
@@ -784,9 +823,23 @@ class HandDriveToolApp(tk.Tk):
         controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         controls.columnconfigure(1, weight=1)
 
-        ttk.Label(controls, text="Auto delta X").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="Config").grid(row=0, column=0, sticky="w")
+        self.preview_output_combo = ttk.Combobox(
+            controls,
+            textvariable=self.preview_output_var,
+            state="disabled",
+            width=28,
+        )
+        self.preview_output_combo.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(8, 0))
+        self.preview_output_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._preview_output_selected(),
+        )
+        self._wire_preview_output_popdown()
+
+        ttk.Label(controls, text="Auto delta X").grid(row=1, column=0, sticky="w", pady=(6, 0))
         delta_row = ttk.Frame(controls)
-        delta_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(8, 0))
+        delta_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(6, 0))
         delta_row.columnconfigure(0, weight=1)
         ttk.Label(delta_row, textvariable=self.auto_delta_var).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(
@@ -800,43 +853,31 @@ class HandDriveToolApp(tk.Tk):
         self.manual_delta_entry.bind("<FocusOut>", lambda _event: self._commit_delta_from_ui())
         self.manual_delta_entry.bind("<Return>", lambda _event: self._commit_delta_from_ui())
 
-        ttk.Label(controls, text="Licence plates").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(controls, text="Licence plates").grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.plate_summary_var = tk.StringVar(value="Off")
         plate_row = ttk.Frame(controls)
-        plate_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(6, 0))
-        plate_row.columnconfigure(1, weight=1)
-        ttk.Checkbutton(
+        plate_row.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(6, 0))
+        plate_row.columnconfigure(0, weight=1)
+        self.plate_choice_combo = ttk.Combobox(
             plate_row,
-            text="Generate",
-            variable=self.plate_enabled_var,
-            command=self._plate_enabled_toggled,
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(plate_row, textvariable=self.plate_summary_var).grid(row=0, column=1, sticky="w", padx=(10, 0))
-        ttk.Button(plate_row, text="Configure...", command=lambda: self._open_plate_editor(None)).grid(
+            textvariable=self.plate_choice_var,
+            state="readonly",
+        )
+        self.plate_choice_combo.grid(row=0, column=0, sticky="ew")
+        self.plate_choice_combo.bind("<<ComboboxSelected>>", lambda _event: self._main_plate_choice_changed())
+        self.plate_configure_button = ttk.Button(plate_row, text="Configure...", command=lambda: self._open_plate_editor(None))
+        self.plate_configure_button.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        ttk.Button(plate_row, text="Library...", command=self._open_plate_library).grid(
             row=0, column=2, sticky="e", padx=(6, 0)
         )
 
-        ttk.Label(controls, text="Mods folder").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(controls, textvariable=self.mods_folder_var).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
-        ttk.Button(controls, text="Browse", command=self._browse_mods_folder).grid(row=2, column=2, sticky="e", padx=(6, 0), pady=(6, 0))
+        ttk.Label(controls, text="Mods folder").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(controls, textvariable=self.mods_folder_var).grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
+        ttk.Button(controls, text="Browse", command=self._browse_mods_folder).grid(row=3, column=2, sticky="e", padx=(6, 0), pady=(6, 0))
 
-        ttk.Label(controls, text="Blender exe").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(controls, textvariable=self.blender_var).grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
-        ttk.Button(controls, text="Browse", command=self._browse_blender).grid(row=3, column=2, sticky="e", padx=(6, 0), pady=(6, 0))
-
-        ttk.Label(controls, text="Preview output").grid(row=4, column=0, sticky="w", pady=(6, 0))
-        self.preview_output_combo = ttk.Combobox(
-            controls,
-            textvariable=self.preview_output_var,
-            state="disabled",
-            width=28,
-        )
-        self.preview_output_combo.grid(row=4, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(6, 0))
-        self.preview_output_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._preview_output_selected(),
-        )
-        self._wire_preview_output_popdown()
+        ttk.Label(controls, text="Blender exe").grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(controls, textvariable=self.blender_var).grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
+        ttk.Button(controls, text="Browse", command=self._browse_blender).grid(row=4, column=2, sticky="e", padx=(6, 0), pady=(6, 0))
 
         buttons = ttk.Frame(parent)
         buttons.grid(row=2, column=0, sticky="ew", pady=(8, 0))
@@ -1019,6 +1060,7 @@ class HandDriveToolApp(tk.Tk):
             context = core.load_vehicle_context(source_zip, vehicle_id, use_cache=not force_reload)
             if force_reload:
                 core.clear_parts_cache(context)
+                core.clear_variant_hands_cache(context)
             conversion, loaded = core.load_or_create_conversion(context)
             self.worker_queue.put(
                 ("vehicle_load_success", (seq, source_zip, vehicle_id, context, conversion, loaded))
@@ -1044,8 +1086,9 @@ class HandDriveToolApp(tk.Tk):
         self.context = context
         self.conversion = conversion
         self.preview_output_var.set("")
-        self.variant_detected_hands = {}
-        self.variant_detection_complete = False
+        cached_hands = core.load_cached_variant_hands(context, conversion) or {}
+        self.variant_detected_hands = cached_hands
+        self.variant_detection_complete = all(name in cached_hands for name in context.variants)
         self.variant_detection_pending = False
         self.settings["lastVehicleZipPath"] = str(source_zip)
         self.settings["lastVehicleId"] = vehicle_id
@@ -1063,7 +1106,8 @@ class HandDriveToolApp(tk.Tk):
         self._sync_plate_to_ui()
         self._replace_viewer()
         self._refresh_all(reset_view=True)
-        self._schedule_variant_detection()
+        if not self.variant_detection_complete:
+            self._schedule_variant_detection()
         self._schedule_mesh_scene(immediate=True)
         loaded_text = "loaded exact project config" if loaded else "new project config"
         self.project_var.set(f"Project: {context.project_dir} ({loaded_text})")
@@ -1117,18 +1161,74 @@ class HandDriveToolApp(tk.Tk):
         self._manual_delta_toggled(refresh=False)
 
     def _sync_plate_to_ui(self) -> None:
-        cfg = plate_generator.normalized_plate_config(self.conversion.get("plate"))
-        self.plate_enabled_var.set(bool(cfg.get("enabled")))
+        self.conversion["plate"] = plate_generator.normalized_plate_binding(self.conversion.get("plate"))
+        self._refresh_plate_choices()
         self._refresh_plate_summary()
 
-    def _plate_enabled_toggled(self) -> None:
-        cfg = plate_generator.normalized_plate_config(self.conversion.get("plate"))
-        cfg["enabled"] = bool(self.plate_enabled_var.get())
-        self.conversion["plate"] = cfg
+    def _refresh_plate_choices(self) -> None:
+        if not hasattr(self, "plate_choice_combo"):
+            return
+        records = plate_generator.plate_set_records()
+        custom_label = self._vehicle_custom_label()
+        self.plate_choice_to_id = {"Off": "", custom_label: ""}
+        values = ["Off", custom_label]
+        for record in records:
+            label = str(record["name"])
+            if label in self.plate_choice_to_id:
+                label = f"{label} ({record['id']})"
+            values.append(label)
+            self.plate_choice_to_id[label] = str(record["id"])
+        self.plate_choice_combo.configure(values=values)
+        binding = plate_generator.normalized_plate_binding(self.conversion.get("plate"))
+        if binding["mode"] == plate_generator.PLATE_MODE_SET:
+            set_id = str(binding.get("setId") or "")
+            selected = next((label for label, value in self.plate_choice_to_id.items() if value == set_id), f"Missing set: {set_id}")
+        elif binding["mode"] == plate_generator.PLATE_MODE_CUSTOM:
+            selected = custom_label
+        else:
+            selected = "Off"
+        self.plate_choice_var.set(selected)
+        self.plate_configure_button.configure(state="disabled" if selected == "Off" else "normal")
+
+    def _main_plate_choice_changed(self) -> None:
+        label = self.plate_choice_var.get()
+        custom_label = self._vehicle_custom_label()
+        binding = plate_generator.normalized_plate_binding(self.conversion.get("plate"))
+        if label == "Off":
+            binding["mode"] = plate_generator.PLATE_MODE_OFF
+            binding["setId"] = ""
+        elif label == custom_label:
+            binding["mode"] = plate_generator.PLATE_MODE_CUSTOM
+            binding["setId"] = ""
+            binding["customDefined"] = True
+            binding["config"] = plate_generator.normalized_plate_config(binding.get("customConfig"))
+        else:
+            set_id = self.plate_choice_to_id.get(label, "")
+            record = plate_generator.plate_set_by_id(set_id)
+            if record is not None:
+                binding["mode"] = plate_generator.PLATE_MODE_SET
+                binding["setId"] = set_id
+                binding["config"] = plate_generator.normalized_plate_config(record.get("config"))
+        self.conversion["plate"] = binding
         self._refresh_plate_summary()
+        self._refresh_plate_choices()
+        self._refresh_variants()
         self._update_detail()
-        state = "enabled" if cfg["enabled"] else "disabled"
-        self.status_var.set(f"Licence plates {state} ({plate_generator.plate_summary_label(self.conversion)})")
+        self.status_var.set(f"Licence plates: {plate_generator.plate_summary_label(self.conversion)}")
+
+    def _vehicle_custom_label(self) -> str:
+        vehicle_id = self.context.vehicle_id if self.context is not None else "vehicle"
+        return f"Custom ({vehicle_id})"
+
+    def _vehicle_plate_label(self) -> str:
+        binding = plate_generator.normalized_plate_binding(self.conversion.get("plate"))
+        if binding["mode"] == plate_generator.PLATE_MODE_CUSTOM:
+            return self._vehicle_custom_label()
+        if binding["mode"] == plate_generator.PLATE_MODE_SET:
+            set_id = str(binding.get("setId") or "")
+            record = plate_generator.plate_set_by_id(set_id)
+            return f"Set: {record['name']} (vehicle)" if record else f"Missing set: {set_id} (vehicle)"
+        return "Off (vehicle)"
 
     def _refresh_all(self, *, reset_view: bool = False) -> None:
         self._refresh_variants()
@@ -1139,6 +1239,7 @@ class HandDriveToolApp(tk.Tk):
     def _refresh_variants(self) -> None:
         if self.context is None:
             return
+        self._close_tree_combo_editor()
         keep = set(self.variant_tree.selection())
         previous_order = list(self.variant_tree.get_children(""))
         for item in self.variant_tree.get_children():
@@ -1150,27 +1251,45 @@ class HandDriveToolApp(tk.Tk):
                 config_name,
                 {
                     "selected": False,
+                    "build": core.BUILD_OFF,
                     "sourceHandOverride": core.HAND_AUTO,
+                    "frontPlate": plate_generator.PLATE_PART_AUTO,
+                    "rearPlate": plate_generator.PLATE_PART_AUTO,
                 },
             )
             if not isinstance(settings, dict):
                 continue
             detected = self._detected_hand_for_ui(config_name)
-            override = str(settings.get("sourceHandOverride", core.HAND_AUTO))
-            output = self._variant_output_name_for_ui(config_name, settings, detected)
+            build_mode = core.variant_build_mode(settings)
+            core.set_variant_build_mode(settings, build_mode)
+            stock_hand = (
+                self._variant_stock_hand_label(config_name, settings, detected)
+                if build_mode in {core.BUILD_CONVERTED, core.BUILD_BOTH}
+                else "—"
+            )
             self.variant_tree.insert(
                 "",
                 "end",
                 iid=config_name,
                 tags=self._row_tags(row_index),
                 values=(
-                    yn_label(settings.get("selected")),
+                    BUILD_LABELS[build_mode],
                     config_name,
                     variant.display_name,
-                    detected,
-                    override,
-                    self._variant_plate_label(settings),
-                    output,
+                    stock_hand,
+                    self._variant_plate_label(config_name, settings),
+                    plate_generator.plate_part_label_for_config(
+                        self.context,
+                        config_name,
+                        "front",
+                        settings.get("frontPlate"),
+                    ),
+                    plate_generator.plate_part_label_for_config(
+                        self.context,
+                        config_name,
+                        "rear",
+                        settings.get("rearPlate"),
+                    ),
                 ),
             )
             row_index += 1
@@ -1181,13 +1300,21 @@ class HandDriveToolApp(tk.Tk):
         self._refresh_plate_summary()
         self._refresh_preview_outputs()
 
-    def _variant_plate_label(self, settings: dict[str, object]) -> str:
+    def _variant_plate_label(self, config_name: str, settings: dict[str, object]) -> str:
         mode = plate_generator.variant_plate_mode(settings)
-        if mode == "custom":
-            return "Custom"
-        if mode == "off":
+        if mode == plate_generator.PLATE_MODE_CUSTOM:
+            return f"Custom ({config_name})"
+        if mode == plate_generator.PLATE_MODE_TRIM:
+            binding = plate_generator.normalized_plate_binding(settings.get("plate"), variant=True)
+            return f"Custom ({binding.get('sourceConfig') or 'missing'})"
+        if mode == plate_generator.PLATE_MODE_OFF:
             return "Off"
-        return "General"
+        if mode == plate_generator.PLATE_MODE_SET:
+            binding = plate_generator.normalized_plate_binding(settings.get("plate"), variant=True)
+            set_id = str(binding.get("setId") or "")
+            record = plate_generator.plate_set_by_id(set_id)
+            return f"Set: {record['name']}" if record else f"Missing set: {set_id}"
+        return self._vehicle_plate_label()
 
     def _refresh_plate_summary(self) -> None:
         if hasattr(self, "plate_summary_var"):
@@ -1196,7 +1323,7 @@ class HandDriveToolApp(tk.Tk):
     def _detected_hand_for_ui(self, config_name: str) -> str:
         return self.variant_detected_hands.get(config_name, "..." if not self.variant_detection_complete else core.HAND_UNKNOWN)
 
-    def _variant_output_name_for_ui(
+    def _variant_stock_hand_label(
         self,
         config_name: str,
         settings: dict[str, object],
@@ -1204,49 +1331,125 @@ class HandDriveToolApp(tk.Tk):
     ) -> str:
         detected = detected if detected is not None else self._detected_hand_for_ui(config_name)
         override = str(settings.get("sourceHandOverride", core.HAND_AUTO))
-        source = override if override != core.HAND_AUTO else detected
-        if source == "...":
-            return "detecting"
-        target = core.target_hand_for(source, core.ACTION_OPPOSITE)
-        return "skip" if target is None else core.variant_output_name(config_name, target)
+        if override in {core.HAND_LHD, core.HAND_RHD, core.HAND_UNKNOWN} and override != detected:
+            return override
+        if detected == "...":
+            return "Detecting..."
+        return f"{detected} (default)"
 
-    def _output_config_sources_for_ui(self) -> dict[str, str]:
+    def _variant_stock_hand_choices(
+        self,
+        config_name: str,
+        settings: dict[str, object],
+    ) -> tuple[list[str], dict[str, str]]:
+        detected = self._detected_hand_for_ui(config_name)
+        default_label = "Detecting..." if detected == "..." else f"{detected} (default)"
+        mapping = {default_label: core.HAND_AUTO}
+        for hand in (core.HAND_LHD, core.HAND_RHD):
+            if hand != detected:
+                mapping[hand] = hand
+        override = str(settings.get("sourceHandOverride", core.HAND_AUTO))
+        if override == core.HAND_UNKNOWN and core.HAND_UNKNOWN not in mapping:
+            mapping[core.HAND_UNKNOWN] = core.HAND_UNKNOWN
+        return list(mapping), mapping
+
+    def _variant_output_name_for_ui(
+        self,
+        config_name: str,
+        settings: dict[str, object],
+        detected: str | None = None,
+    ) -> str:
+        detected = detected if detected is not None else self._detected_hand_for_ui(config_name)
+        mode = core.variant_build_mode(settings)
+        if mode == core.BUILD_OFF:
+            return "skip"
+        override = str(settings.get("sourceHandOverride", core.HAND_AUTO))
+        source = override if override != core.HAND_AUTO else detected
+        outputs: list[str] = []
+        if mode in {core.BUILD_CONVERTED, core.BUILD_BOTH}:
+            if source == "...":
+                outputs.append("detecting")
+            else:
+                target = core.target_hand_for(source, core.ACTION_OPPOSITE)
+                outputs.append("skip" if target is None else core.variant_output_name(config_name, target))
+        if mode in {core.BUILD_ORIGINAL, core.BUILD_BOTH}:
+            outputs.append(core.original_plate_output_name(config_name))
+        return ", ".join(outputs)
+
+    @staticmethod
+    def _preview_config_label(output_name: str) -> str:
+        return re.sub(r"_(?:rhd|lhd)$", "", output_name, flags=re.IGNORECASE)
+
+    def _output_config_sources_for_ui(self) -> tuple[dict[str, str], dict[str, str]]:
         if self.context is None:
-            return {}
+            return {}, {}
         variants = self.conversion.get("variants", {})
         if not isinstance(variants, dict):
-            return {}
+            return {}, {}
         choices: dict[str, str] = {}
+        outputs: dict[str, str] = {}
+
+        def add_choice(config_name: str, output_name: str) -> None:
+            label = self._preview_config_label(config_name)
+            suffix = 2
+            base = label
+            while label in choices and choices.get(label) != config_name:
+                label = f"{base} {suffix}"
+                suffix += 1
+            choices[label] = config_name
+            outputs[label] = output_name
+
         for config_name, settings in variants.items():
             if config_name not in self.context.variants or not isinstance(settings, dict):
                 continue
-            if not settings.get("selected"):
-                continue
             detected = self._detected_hand_for_ui(config_name)
-            output = self._variant_output_name_for_ui(config_name, settings, detected)
-            if output not in {"skip", "detecting"}:
-                choices[output] = config_name
-        return choices
+            mode = core.variant_build_mode(settings)
+            if mode == core.BUILD_OFF:
+                continue
+            output_name = ""
+            if mode in {core.BUILD_CONVERTED, core.BUILD_BOTH}:
+                override = str(settings.get("sourceHandOverride", core.HAND_AUTO))
+                source = override if override != core.HAND_AUTO else detected
+                target = core.target_hand_for(source, core.ACTION_OPPOSITE)
+                if target is not None:
+                    output_name = core.variant_output_name(config_name, target)
+            if not output_name and mode in {core.BUILD_ORIGINAL, core.BUILD_BOTH}:
+                output_name = core.original_plate_output_name(config_name)
+            if output_name:
+                add_choice(config_name, output_name)
+        return choices, outputs
 
     def _refresh_preview_outputs(self) -> None:
         if self.context is None or not hasattr(self, "preview_output_combo"):
             self.preview_output_to_config = {}
+            self.preview_output_to_output = {}
             self.preview_output_var.set("")
             return
         current = self.preview_output_var.get()
-        choices = self._output_config_sources_for_ui()
+        choices, outputs = self._output_config_sources_for_ui()
         self.preview_output_to_config = choices
+        self.preview_output_to_output = outputs
         values = sorted(choices)
         self.preview_output_combo.configure(values=values)
         if current in choices:
             selected = current
         else:
-            selected = self._cached_preview_output(choices)
+            selected = self._cached_preview_output(choices, outputs)
             tree_selection = self.variant_tree.selection()
             if tree_selection:
-                output = str(self.variant_tree.set(tree_selection[0], "output"))
-                if not selected and output in choices:
-                    selected = output
+                config_name = tree_selection[0]
+                settings = self.conversion.get("variants", {}).get(config_name, {})
+                output = (
+                    self._variant_output_name_for_ui(config_name, settings)
+                    if isinstance(settings, dict)
+                    else ""
+                )
+                if not selected:
+                    actual_outputs = {item.strip() for item in output.split(",") if item.strip()}
+                    selected = next(
+                        (label for label, actual in outputs.items() if actual in actual_outputs),
+                        "",
+                    )
             if not selected and values:
                 selected = values[0]
         self.preview_output_var.set(selected)
@@ -1261,7 +1464,11 @@ class HandDriveToolApp(tk.Tk):
         source = str(self.context.source_zip.resolve(strict=False))
         return f"{source}|{self.context.vehicle_id}"
 
-    def _cached_preview_output(self, choices: dict[str, str]) -> str:
+    def _cached_preview_output(
+        self,
+        choices: dict[str, str],
+        outputs: dict[str, str],
+    ) -> str:
         key = self._preview_output_cache_key()
         cache = self.settings.setdefault("previewOutputByVehicle", {})
         if not key or not isinstance(cache, dict):
@@ -1271,22 +1478,30 @@ class HandDriveToolApp(tk.Tk):
             output = str(entry.get("output") or "")
             if output in choices:
                 return output
+            for label, actual_output in outputs.items():
+                if actual_output == output:
+                    return label
             config = str(entry.get("config") or "")
             if config:
                 for label, source_config in choices.items():
                     if source_config == config:
                         return label
-        elif isinstance(entry, str) and entry in choices:
-            return entry
+        elif isinstance(entry, str):
+            if entry in choices:
+                return entry
+            for label, actual_output in outputs.items():
+                if actual_output == entry:
+                    return label
         return ""
 
     def _remember_preview_output(self, label: str | None = None) -> None:
         key = self._preview_output_cache_key()
         if key is None:
             return
-        output = (label if label is not None else self.preview_output_var.get()).strip()
-        config = self.preview_output_to_config.get(output)
-        if not output or not config:
+        display_label = (label if label is not None else self.preview_output_var.get()).strip()
+        config = self.preview_output_to_config.get(display_label)
+        output = self.preview_output_to_output.get(display_label)
+        if not display_label or not output or not config:
             return
         cache = self.settings.setdefault("previewOutputByVehicle", {})
         if not isinstance(cache, dict):
@@ -1300,8 +1515,12 @@ class HandDriveToolApp(tk.Tk):
         self._remember_preview_output()
         self._schedule_mesh_scene(immediate=True)
 
+    def _selected_preview_output_name(self) -> str:
+        label = (self.preview_output_hover or self.preview_output_var.get()).strip()
+        return self.preview_output_to_output.get(label, "")
+
     def _wire_preview_output_popdown(self) -> None:
-        """Hot-load trims while scrolling the Preview output dropdown. The ttk
+        """Hot-load trims while scrolling the Config dropdown. The ttk
         combobox popdown listbox is a plain Tcl widget with no Python wrapper;
         watch it via its <Map> event and poll the highlighted entry while it
         stays open."""
@@ -1364,7 +1583,7 @@ class HandDriveToolApp(tk.Tk):
         self._schedule_mesh_scene(immediate=True)
 
     def _variant_detection_signature(self) -> tuple[str, ...]:
-        return tuple(sorted(core.selected_steering_refs(self.conversion)))
+        return core.variant_hand_detection_signature(self.conversion)
 
     def _invalidate_variant_detection(self) -> None:
         self.variant_detected_hands = {}
@@ -1373,6 +1592,8 @@ class HandDriveToolApp(tk.Tk):
 
     def _schedule_variant_detection(self) -> None:
         if self.context is None:
+            return
+        if self.variant_detection_complete:
             return
         if self.variant_detection_running:
             self.variant_detection_pending = True
@@ -1401,10 +1622,7 @@ class HandDriveToolApp(tk.Tk):
         context: core.VehicleContext,
         conversion: dict[str, object],
     ) -> dict[str, str]:
-        return {
-            config_name: core.detect_hand_for_variant(context, conversion, config_name)
-            for config_name in sorted(context.variants)
-        }
+        return core.detect_hands_for_variants(context, conversion)
 
     def _handle_variant_hands_done(self, payload: object) -> None:
         seq, context, signature, completed = payload
@@ -1574,7 +1792,9 @@ class HandDriveToolApp(tk.Tk):
         return [
             name
             for name, settings in variants.items()
-            if name in self.context.variants and isinstance(settings, dict) and settings.get("selected")
+            if name in self.context.variants
+            and isinstance(settings, dict)
+            and core.variant_build_mode(settings) != core.BUILD_OFF
         ]
 
     def _preview_base_part_ids(self) -> list[str]:
@@ -1633,7 +1853,7 @@ class HandDriveToolApp(tk.Tk):
 
     def _preview_active_ids(self) -> set[str]:
         """Object ids present on the trim currently shown in the moderngl
-        preview -- i.e. the config chosen in the Preview output dropdown. This
+        preview -- i.e. the config chosen in the Config dropdown. This
         indicates which parts the converted trim actually uses; it is NOT
         affected by the viewer Visible/Solo toggles (those only filter what is
         drawn). Ground truth is the built scene's mesh groups (keyed by object
@@ -1748,7 +1968,7 @@ class HandDriveToolApp(tk.Tk):
         for config_name in self.context.variants:
             settings = variants.setdefault(config_name, {})
             if isinstance(settings, dict):
-                settings["selected"] = selected
+                core.set_variant_build_mode(settings, core.BUILD_CONVERTED if selected else core.BUILD_OFF)
         self._refresh_variants()
         self._schedule_parts_refresh(reset_view=True)
         self._refresh_delta_label()
@@ -1761,15 +1981,20 @@ class HandDriveToolApp(tk.Tk):
         variants = self.conversion.setdefault("variants", {})
         settings = variants.setdefault(config_name, {})
         if isinstance(settings, dict):
-            settings["selected"] = not bool(settings.get("selected"))
+            mode = core.variant_build_mode(settings)
+            core.set_variant_build_mode(
+                settings,
+                core.BUILD_OFF if mode != core.BUILD_OFF else core.BUILD_CONVERTED,
+            )
         self._refresh_variants()
         self._schedule_parts_refresh(reset_view=True)
         self._refresh_delta_label()
         self._update_detail()
-        state = "selected" if self._get_variant_setting(config_name, "selected", False) else "cleared"
+        state = BUILD_LABELS[core.variant_build_mode(settings)] if isinstance(settings, dict) else "Off"
         self.status_var.set(f"{config_name} {state}; updating used parts...")
 
     def _variant_click(self, event: tk.Event) -> None:
+        self._close_tree_combo_editor()
         if not self._tree_body_click(self.variant_tree, event):
             return None
         item = self.variant_tree.identify_row(event.y)
@@ -1777,27 +2002,74 @@ class HandDriveToolApp(tk.Tk):
         if not item or self.context is None:
             return
         name = self._tree_column_name(self.variant_tree, column)
-        if name == "override":
+        if name == "build":
+            settings = self.conversion.setdefault("variants", {}).setdefault(item, {})
+            current = BUILD_LABELS[core.variant_build_mode(settings)] if isinstance(settings, dict) else BUILD_LABELS[core.BUILD_OFF]
             self._edit_tree_combo(
                 self.variant_tree,
                 item,
                 column,
-                list(core.HAND_CHOICES),
-                self._get_variant_setting(item, "sourceHandOverride", core.HAND_AUTO),
-                lambda value: self._set_variant_setting(item, "sourceHandOverride", value),
+                list(BUILD_LABELS.values()),
+                current,
+                lambda value: self._set_variant_build_label(item, value),
+            )
+            return "break"
+        if name == "stock_hand":
+            settings = self.conversion.get("variants", {}).get(item, {})
+            if core.variant_build_mode(settings) not in {core.BUILD_CONVERTED, core.BUILD_BOTH}:
+                return "break"
+            labels, mapping = self._variant_stock_hand_choices(item, settings)
+            self._edit_tree_combo(
+                self.variant_tree,
+                item,
+                column,
+                labels,
+                self._variant_stock_hand_label(item, settings),
+                lambda value: self._set_variant_setting(item, "sourceHandOverride", mapping[value]),
             )
             return "break"
         if name == "plate":
-            self._open_plate_editor(item)
+            labels, mapping = self._variant_plate_choices(item)
+            current_label = self._variant_plate_label(item, self.conversion.get("variants", {}).get(item, {}))
+            self._edit_tree_combo(
+                self.variant_tree,
+                item,
+                column,
+                labels,
+                current_label,
+                lambda value: self._set_variant_plate_choice(item, mapping[value]),
+            )
+            return "break"
+        if name in {"front_plate", "rear_plate"}:
+            side = "front" if name == "front_plate" else "rear"
+            key = "frontPlate" if side == "front" else "rearPlate"
+            choices = plate_generator.plate_part_choices_for_config(self.context, item, side)
+            labels = [choice.label for choice in choices]
+            values_by_label = {choice.label: choice.value for choice in choices}
+            current_value = self._get_variant_setting(item, key, plate_generator.PLATE_PART_AUTO)
+            current_label = plate_generator.plate_part_label_for_config(
+                self.context,
+                item,
+                side,
+                current_value,
+            )
+            self._edit_tree_combo(
+                self.variant_tree,
+                item,
+                column,
+                labels,
+                current_label,
+                lambda value: self._set_variant_setting(item, key, values_by_label[value]),
+            )
             return "break"
         if name is not None:
-            # Any other data column (Use / Config / Display / Detected / Output)
-            # toggles the trim's selected state.
+            # Clicking the descriptive cells keeps the old quick on/off action.
             self._toggle_variant_selected(item)
             return "break"
         return None
 
     def _variant_double_click(self, event: tk.Event) -> None:
+        self._close_tree_combo_editor()
         if not self._tree_body_click(self.variant_tree, event):
             return None
         item = self.variant_tree.identify_row(event.y)
@@ -1805,30 +2077,169 @@ class HandDriveToolApp(tk.Tk):
         if not item:
             return
         name = self._tree_column_name(self.variant_tree, column)
-        if name == "override":
+        if name == "plate":
+            self._open_plate_editor(item)
+        elif name == "stock_hand":
+            settings = self.conversion.get("variants", {}).get(item, {})
+            if core.variant_build_mode(settings) not in {core.BUILD_CONVERTED, core.BUILD_BOTH}:
+                return "break"
+            labels, mapping = self._variant_stock_hand_choices(item, settings)
             self._edit_tree_combo(
                 self.variant_tree,
                 item,
                 column,
-                list(core.HAND_CHOICES),
-                self._get_variant_setting(item, "sourceHandOverride", core.HAND_AUTO),
-                lambda value: self._set_variant_setting(item, "sourceHandOverride", value),
+                labels,
+                self._variant_stock_hand_label(item, settings),
+                lambda value: self._set_variant_setting(item, "sourceHandOverride", mapping[value]),
             )
-        elif name == "output":
-            return "break"
 
-    def _open_plate_editor(self, variant_name: str | None) -> None:
-        if self.context is None:
+    def _variant_plate_choices(self, config_name: str) -> tuple[list[str], dict[str, tuple[str, str, str]]]:
+        mapping: dict[str, tuple[str, str, str]] = {
+            self._vehicle_plate_label(): (plate_generator.PLATE_MODE_GENERAL, "", ""),
+            f"Custom ({config_name})": (plate_generator.PLATE_MODE_CUSTOM, "", config_name),
+        }
+        variants = self.conversion.get("variants", {})
+        if isinstance(variants, dict):
+            for source_name, source_settings in sorted(variants.items()):
+                if source_name == config_name or not isinstance(source_settings, dict):
+                    continue
+                source_binding = plate_generator.normalized_plate_binding(
+                    source_settings.get("plate"), variant=True
+                )
+                if not source_binding.get("customDefined"):
+                    continue
+                mapping[f"Custom ({source_name})"] = (
+                    plate_generator.PLATE_MODE_TRIM,
+                    "",
+                    str(source_name),
+                )
+        for record in plate_generator.plate_set_records():
+            label = f"Set: {record['name']}"
+            if label in mapping:
+                label = f"{label} ({record['id']})"
+            mapping[label] = (plate_generator.PLATE_MODE_SET, str(record["id"]), "")
+        mapping["Off"] = (plate_generator.PLATE_MODE_OFF, "", "")
+        return list(mapping), mapping
+
+    def _set_variant_build_label(self, config_name: str, label: str) -> None:
+        mode = next((key for key, value in BUILD_LABELS.items() if value == label), core.BUILD_OFF)
+        variants = self.conversion.setdefault("variants", {})
+        settings = variants.setdefault(config_name, {})
+        if isinstance(settings, dict):
+            core.set_variant_build_mode(settings, mode)
+        self._refresh_variants()
+        self._schedule_parts_refresh(reset_view=True)
+        self._refresh_delta_label()
+        self._update_detail()
+
+    def _set_variant_plate_choice(self, config_name: str, choice: tuple[str, str, str]) -> None:
+        mode, set_id, source_config = choice
+        settings = self.conversion.setdefault("variants", {}).setdefault(config_name, {})
+        if not isinstance(settings, dict):
+            return
+        binding = plate_generator.normalized_plate_binding(settings.get("plate"), variant=True)
+        previous_mode = str(binding.get("mode"))
+        if mode == plate_generator.PLATE_MODE_CUSTOM:
+            if previous_mode != plate_generator.PLATE_MODE_CUSTOM and not binding.get("customDefined"):
+                if previous_mode == plate_generator.PLATE_MODE_SET:
+                    record = plate_generator.plate_set_by_id(str(binding.get("setId") or ""))
+                    copy_config = record.get("config") if record is not None else binding.get("config")
+                elif previous_mode == plate_generator.PLATE_MODE_TRIM:
+                    referenced = str(binding.get("sourceConfig") or "")
+                    referenced_settings = self.conversion.get("variants", {}).get(referenced, {})
+                    referenced_binding = plate_generator.normalized_plate_binding(
+                        referenced_settings.get("plate") if isinstance(referenced_settings, dict) else None,
+                        variant=True,
+                    )
+                    copy_config = referenced_binding.get("customConfig")
+                else:
+                    general = plate_generator.normalized_plate_binding(self.conversion.get("plate"))
+                    copy_config = (
+                        general.get("customConfig")
+                        if general.get("mode") == plate_generator.PLATE_MODE_CUSTOM
+                        else general.get("config")
+                    )
+                binding["customConfig"] = plate_generator.normalized_plate_config(copy_config)
+            binding["config"] = plate_generator.normalized_plate_config(binding.get("customConfig"))
+        binding["mode"] = mode
+        binding["setId"] = set_id
+        binding["sourceConfig"] = source_config
+        if mode == plate_generator.PLATE_MODE_CUSTOM:
+            binding["customDefined"] = True
+        elif mode == plate_generator.PLATE_MODE_TRIM:
+            source_settings = self.conversion.get("variants", {}).get(source_config, {})
+            source_binding = plate_generator.normalized_plate_binding(
+                source_settings.get("plate") if isinstance(source_settings, dict) else None,
+                variant=True,
+            )
+            binding["config"] = plate_generator.normalized_plate_config(source_binding.get("customConfig"))
+        if mode == plate_generator.PLATE_MODE_SET:
+            record = plate_generator.plate_set_by_id(set_id)
+            if record is not None:
+                binding["config"] = plate_generator.normalized_plate_config(record.get("config"))
+        settings["plate"] = binding
+        self._refresh_variants()
+        self._update_detail()
+        if mode == plate_generator.PLATE_MODE_CUSTOM:
+            self._open_plate_editor(config_name)
+
+    def _open_plate_library(self) -> None:
+        if self.plate_library_modal is not None and self.plate_library_modal.winfo_exists():
+            self.plate_library_modal.lift()
+            return
+        self.plate_library_modal = PlateLibraryDialog(self)
+
+    def _open_plate_editor(self, variant_name: str | None, *, set_id: str | None = None) -> None:
+        if self.context is None and set_id is None:
             self._show_error("No source", "Open a vehicle zip first.")
             return
         if self.plate_editor_modal is not None and self.plate_editor_modal.winfo_exists():
             self.plate_editor_modal.lift()
             return
-        self.plate_editor_modal = PlateEditorDialog(self, variant_name)
+        if set_id is None:
+            if variant_name is None:
+                binding = plate_generator.normalized_plate_binding(self.conversion.get("plate"))
+            else:
+                settings = self.conversion.get("variants", {}).get(variant_name, {})
+                binding = plate_generator.normalized_plate_binding(
+                    settings.get("plate") if isinstance(settings, dict) else None,
+                    variant=True,
+                )
+                if binding.get("mode") == plate_generator.PLATE_MODE_TRIM:
+                    source_config = str(binding.get("sourceConfig") or "")
+                    source_settings = self.conversion.get("variants", {}).get(source_config, {})
+                    if not isinstance(source_settings, dict):
+                        self._show_error(
+                            "Missing custom plate settings",
+                            f"Custom plate source '{source_config}' is no longer available. Choose a new plate option for this trim.",
+                        )
+                        return
+                    variant_name = source_config
+                    binding = plate_generator.normalized_plate_binding(source_settings.get("plate"), variant=True)
+                elif binding.get("mode") == plate_generator.PLATE_MODE_GENERAL:
+                    binding = plate_generator.normalized_plate_binding(self.conversion.get("plate"))
+                    variant_name = None
+                    if binding.get("mode") == plate_generator.PLATE_MODE_OFF:
+                        self._show_error(
+                            "Plates are off",
+                            "Choose a custom or library plate option before configuring it.",
+                        )
+                        return
+            if binding.get("mode") == plate_generator.PLATE_MODE_SET:
+                set_id = str(binding.get("setId") or "")
+        if set_id is not None and plate_generator.plate_set_by_id(set_id) is None:
+            self._show_error(
+                "Missing plate set",
+                f"Plate set '{set_id}' was deleted. The build can still use its saved snapshot; choose Custom to edit that snapshot.",
+            )
+            return
+        self.plate_editor_modal = PlateEditorDialog(self, variant_name if set_id is None else None, set_id=set_id)
 
     def _plate_settings_applied(self) -> None:
         self._sync_plate_to_ui()
         self._refresh_variants()
+        if self.plate_library_modal is not None and self.plate_library_modal.winfo_exists():
+            self.plate_library_modal.refresh()
         self._update_detail()
         self.status_var.set(f"Licence plate settings updated ({plate_generator.plate_summary_label(self.conversion)})")
 
@@ -2439,23 +2850,107 @@ class HandDriveToolApp(tk.Tk):
         current: str,
         on_commit,
     ) -> None:
+        self._close_tree_combo_editor()
+        if not tree.exists(item):
+            return
+        tree.see(item)
         bbox = tree.bbox(item, column)
         if not bbox:
             return
         x, y, width, height = bbox
-        combo = ttk.Combobox(tree, values=values, state="readonly")
+        combo = ttk.Combobox(
+            tree,
+            values=values,
+            state="readonly",
+            exportselection=False,
+            height=min(max(len(values), 1), 15),
+        )
         combo.set(current)
         combo.place(x=x, y=y, width=width, height=height)
+        tree.focus(item)
+        tree.selection_set(item)
+        self._tree_combo_editor = combo
         combo.focus_set()
 
         def commit(_event=None) -> None:
+            if self._tree_combo_editor is not combo:
+                return "break"
             value = combo.get()
-            combo.destroy()
+            self._close_tree_combo_editor()
             on_commit(value)
+            return "break"
+
+        def cancel(_event=None) -> str:
+            if self._tree_combo_editor is combo:
+                self._close_tree_combo_editor()
+                tree.focus_set()
+            return "break"
+
+        def check_focus() -> None:
+            self._tree_combo_focus_after_id = None
+            if self._tree_combo_editor is not combo:
+                return
+            try:
+                focus_path = str(self.tk.call("focus"))
+                combo_path = str(combo)
+                # The popdown list is a separate Tk window, but its Tcl path is
+                # rooted below the combobox.  Keep checking until it unposts so
+                # <<ComboboxSelected>> gets the first chance to commit.
+                if focus_path.startswith(combo_path + ".") or combo.instate(("pressed",)):
+                    self._tree_combo_focus_after_id = self.after(50, check_focus)
+                    return
+                # If the list was dismissed without a selection, ttk returns
+                # focus to the combobox.  Treat that as cancellation; a real
+                # selection has already emitted <<ComboboxSelected>> by now.
+                if focus_path == combo_path:
+                    self._close_tree_combo_editor()
+                    return
+            except tk.TclError:
+                return
+            self._close_tree_combo_editor()
+
+        def focus_out(_event=None) -> None:
+            if self._tree_combo_focus_after_id is not None:
+                try:
+                    self.after_cancel(self._tree_combo_focus_after_id)
+                except tk.TclError:
+                    pass
+            self._tree_combo_focus_after_id = self.after(50, check_focus)
+
+        def post_dropdown() -> None:
+            if self._tree_combo_editor is not combo or not combo.winfo_exists():
+                return
+            combo.focus_set()
+            # Drive the public mouse bindings instead of calling Tk's private
+            # ttk::combobox::Post command.  This gives an in-cell DDL genuine
+            # one-click behaviour while retaining native theme handling.
+            arrow_x = max(1, combo.winfo_width() - 4)
+            arrow_y = max(1, combo.winfo_height() // 2)
+            combo.event_generate("<ButtonPress-1>", x=arrow_x, y=arrow_y)
+            combo.event_generate("<ButtonRelease-1>", x=arrow_x, y=arrow_y)
 
         combo.bind("<<ComboboxSelected>>", commit)
-        combo.bind("<FocusOut>", lambda _event: combo.destroy())
-        combo.bind("<Escape>", lambda _event: combo.destroy())
+        combo.bind("<Return>", commit)
+        combo.bind("<KP_Enter>", commit)
+        combo.bind("<Tab>", commit)
+        combo.bind("<Escape>", cancel)
+        combo.bind("<FocusOut>", focus_out)
+        self.after_idle(post_dropdown)
+
+    def _close_tree_combo_editor(self) -> None:
+        if self._tree_combo_focus_after_id is not None:
+            try:
+                self.after_cancel(self._tree_combo_focus_after_id)
+            except tk.TclError:
+                pass
+            self._tree_combo_focus_after_id = None
+        combo = self._tree_combo_editor
+        self._tree_combo_editor = None
+        if combo is not None:
+            try:
+                combo.destroy()
+            except tk.TclError:
+                pass
 
     def _edit_tree_entry(
         self,
@@ -2904,7 +3399,7 @@ class HandDriveToolApp(tk.Tk):
         self._commit_delta_from_ui()
         self._save_app_settings_from_ui()
         self._set_busy(True)
-        self.status_var.set("Building conversion zip...")
+        self.status_var.set("Building XP conversion zip...")
         worker = threading.Thread(target=self._build_worker, args=(install,), daemon=True)
         worker.start()
 
@@ -2930,17 +3425,18 @@ class HandDriveToolApp(tk.Tk):
         if blender is None:
             self._show_error("Blender not found", "Set the Blender executable path first.")
             return
-        output_name = self.preview_output_var.get().strip()
-        if output_name not in self.preview_output_to_config:
+        config_label = self.preview_output_var.get().strip()
+        output_name = self.preview_output_to_output.get(config_label)
+        if not output_name or config_label not in self.preview_output_to_config:
             self._show_error(
-                "No output",
-                "Select a buildable output config in the Preview output dropdown.",
+                "No config",
+                "Select a buildable config in the Config dropdown.",
             )
             return
         self._commit_delta_from_ui()
         self._save_app_settings_from_ui()
         self._set_busy(True)
-        self.status_var.set(f"Preparing Blender preview for {output_name}...")
+        self.status_var.set(f"Preparing Blender preview for {config_label}...")
         worker = threading.Thread(
             target=self._blender_preview_worker,
             args=(blender, output_name),
@@ -2989,6 +3485,7 @@ class HandDriveToolApp(tk.Tk):
         return json.dumps(
             {
                 "config": config,
+                "output": self._selected_preview_output_name(),
                 "conversion": conversion,
                 # Selected-but-inactive parts are injected into the scene, so
                 # the scene must rebuild when that set changes (and only then;
@@ -3031,6 +3528,13 @@ class HandDriveToolApp(tk.Tk):
         seq = self.mesh_scene_seq
         context = self.context
         conversion_copy = json.loads(json.dumps(self.conversion, default=str))
+        # The in-app preview represents one source trim, independently of how
+        # many build outputs were requested. Always prepare both transformed
+        # and original-layout vertex buffers; the viewer checkbox switches
+        # between them while the resolved replacement plates remain the same.
+        settings = conversion_copy.get("variants", {}).get(config, {})
+        if isinstance(settings, dict):
+            core.set_variant_build_mode(settings, core.BUILD_CONVERTED)
         self.viewer.set_message(f"building preview: {config}...")
         self.mesh_scene_running = True
         extra_meshes = tuple(self._selected_extra_preview_ids())
@@ -3099,7 +3603,10 @@ class HandDriveToolApp(tk.Tk):
         context: core.VehicleContext,
         conversion: dict[str, object],
         config_name: str,
+        output_name: str,
     ) -> bool:
+        if output_name == core.original_plate_output_name(config_name):
+            return True
         object_modes = core.active_part_modes(conversion)
         if not object_modes:
             return False
@@ -3114,8 +3621,8 @@ class HandDriveToolApp(tk.Tk):
             output_sources = core.output_config_sources(self.context, self.conversion)
             config_name = output_sources.get(output_name)
             if config_name is None:
-                raise RuntimeError(f"Unknown preview output {output_name!r}")
-            if self._preview_needs_generated_output(self.context, self.conversion, config_name):
+                raise RuntimeError(f"Unknown generated config {output_name!r}")
+            if self._preview_needs_generated_output(self.context, self.conversion, config_name, output_name):
                 result = core.build_batch(
                     self.context,
                     self.conversion,

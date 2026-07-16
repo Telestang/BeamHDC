@@ -1032,7 +1032,7 @@ class MeshPreview:
         self.stock_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             toolbar,
-            text="Stock",
+            text="Original layout",
             variable=self.stock_var,
             command=self._toggle_stock,
         ).pack(side="right", padx=(0, 10))

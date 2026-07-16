@@ -32,6 +32,19 @@ PLATE_SIZE_US = "US"
 PLATE_SIZE_JP = "JP"
 PLATE_SIZES = (PLATE_SIZE_EU, PLATE_SIZE_US, PLATE_SIZE_JP)
 
+PLATE_PART_AUTO = "auto"
+PLATE_PART_WIDE = "52-11"
+PLATE_PART_2_1 = "30-15"
+PLATE_PART_NONE = "none"
+PLATE_PART_CHOICES = (PLATE_PART_AUTO, PLATE_PART_WIDE, PLATE_PART_2_1, PLATE_PART_NONE)
+PLATE_MESH_CHOICE_PREFIX = "mesh:"
+
+PLATE_MODE_OFF = "off"
+PLATE_MODE_CUSTOM = "custom"
+PLATE_MODE_SET = "set"
+PLATE_MODE_GENERAL = "general"
+PLATE_MODE_TRIM = "trim"
+
 BAND_NONE = "none"
 BAND_EU = "eu"
 BAND_CUSTOM = "custom"
@@ -148,31 +161,212 @@ def normalized_plate_config(raw: object) -> dict[str, object]:
     return merged
 
 
+def default_plate_binding(*, variant: bool = False) -> dict[str, object]:
+    return {
+        "mode": PLATE_MODE_GENERAL if variant else PLATE_MODE_OFF,
+        "setId": "",
+        "sourceConfig": "",
+        "customDefined": False,
+        "config": default_plate_config(),
+        "customConfig": default_plate_config(),
+    }
+
+
+def normalized_plate_binding(raw: object, *, variant: bool = False) -> dict[str, object]:
+    """Normalize the XP plate binding model and migrate the old inline model."""
+    allowed = {PLATE_MODE_GENERAL, PLATE_MODE_OFF, PLATE_MODE_CUSTOM, PLATE_MODE_SET, PLATE_MODE_TRIM}
+    if isinstance(raw, dict) and str(raw.get("mode") or "") in allowed:
+        mode = str(raw.get("mode"))
+        if not variant and mode == PLATE_MODE_GENERAL:
+            mode = PLATE_MODE_OFF
+        config = normalized_plate_config(raw.get("config"))
+        custom_source = raw.get("customConfig")
+        if not isinstance(custom_source, dict) and mode == PLATE_MODE_CUSTOM:
+            custom_source = raw.get("config")
+        custom_config = normalized_plate_config(custom_source)
+        if mode in {PLATE_MODE_CUSTOM, PLATE_MODE_SET}:
+            config["enabled"] = True
+        return {
+            "mode": mode,
+            "setId": str(raw.get("setId") or ""),
+            "sourceConfig": str(raw.get("sourceConfig") or ""),
+            "customDefined": bool(raw.get("customDefined")) or mode == PLATE_MODE_CUSTOM,
+            "config": config,
+            "customConfig": custom_config,
+        }
+
+    # Before the plate library, the general value was the config itself and
+    # trim overrides were {mode: general/custom/off, config: ...}. The latter
+    # was handled above; this branch migrates the former without losing edits.
+    config = normalized_plate_config(raw)
+    enabled = bool(config.get("enabled"))
+    config["enabled"] = True
+    return {
+        "mode": PLATE_MODE_CUSTOM if enabled else (PLATE_MODE_GENERAL if variant else PLATE_MODE_OFF),
+        "setId": "",
+        "sourceConfig": "",
+        "customDefined": enabled,
+        "config": config,
+        "customConfig": copy.deepcopy(config),
+    }
+
+
+def _user_data_dir() -> Path:
+    return Path(os.environ.get("BEAMHDC_DATA_DIR") or _default_user_data_dir())
+
+
+def plate_sets_dir() -> Path:
+    return _user_data_dir() / "plates"
+
+
+def default_plate_export_path() -> Path:
+    return _user_data_dir() / "plate_exports" / "BeamHDC_plates.zip"
+
+
+def _safe_set_id(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value).strip().lower()).strip("-")
+    return slug or "plate-set"
+
+
+def plate_set_records() -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    folder = plate_sets_dir()
+    if not folder.is_dir():
+        return records
+    for path in sorted(folder.glob("*.json"), key=lambda item: item.name.lower()):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        set_id = str(raw.get("id") or path.stem)
+        records.append({
+            "id": set_id,
+            "name": str(raw.get("name") or set_id),
+            "config": normalized_plate_config(raw.get("config")),
+        })
+    return records
+
+
+def plate_set_by_id(set_id: str) -> dict[str, object] | None:
+    wanted = str(set_id)
+    return next((record for record in plate_set_records() if record["id"] == wanted), None)
+
+
+def unique_plate_set_id(name: str) -> str:
+    base = _safe_set_id(name)
+    used = {str(record["id"]) for record in plate_set_records()}
+    candidate = base
+    number = 2
+    while candidate in used:
+        candidate = f"{base}-{number}"
+        number += 1
+    return candidate
+
+
+def save_plate_set(record: dict[str, object]) -> dict[str, object]:
+    set_id = _safe_set_id(str(record.get("id") or record.get("name") or "plate-set"))
+    normalized = {
+        "id": set_id,
+        "name": str(record.get("name") or set_id).strip() or set_id,
+        "config": normalized_plate_config(record.get("config")),
+    }
+    normalized["config"]["enabled"] = True
+    folder = plate_sets_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{set_id}.json"
+    path.write_text(json.dumps(normalized, indent=2, ensure_ascii=False), encoding="utf-8")
+    return normalized
+
+
+def delete_plate_set(set_id: str) -> None:
+    path = plate_sets_dir() / f"{_safe_set_id(set_id)}.json"
+    if path.exists():
+        path.unlink()
+
+
 def variant_plate_mode(variant_settings: object) -> str:
-    """How a trim relates to the general plate settings: general/custom/off."""
+    """How a trim relates to plate settings: general/set/custom/off."""
     if not isinstance(variant_settings, dict):
         return "general"
     override = variant_settings.get("plate")
     if not isinstance(override, dict):
         return "general"
-    return str(override.get("mode") or "general")
+    return str(override.get("mode") or PLATE_MODE_GENERAL)
+
+
+def _resolved_binding_config(
+    binding: dict[str, object],
+    *,
+    warnings: list[str] | None = None,
+    label: str = "plate settings",
+) -> tuple[dict[str, object] | None, str | None]:
+    mode = str(binding.get("mode") or PLATE_MODE_OFF)
+    if mode in {PLATE_MODE_OFF, PLATE_MODE_GENERAL}:
+        return None, None
+    if mode == PLATE_MODE_SET:
+        set_id = str(binding.get("setId") or "")
+        record = plate_set_by_id(set_id)
+        if record is not None:
+            config = normalized_plate_config(record.get("config"))
+            config["enabled"] = True
+            binding["config"] = copy.deepcopy(config)  # live value becomes the embedded fallback snapshot
+            return config, set_id
+        snapshot = normalized_plate_config(binding.get("config"))
+        snapshot["enabled"] = True
+        if warnings is not None:
+            warnings.append(f"{label}: plate set '{set_id}' is missing; using its last saved snapshot")
+        return snapshot, set_id or None
+    config = normalized_plate_config(binding.get("customConfig"))
+    config["enabled"] = True
+    binding["config"] = copy.deepcopy(config)
+    return config, None
+
+
+def effective_plate_selection(
+    conversion: dict[str, object],
+    config_name: str,
+    *,
+    warnings: list[str] | None = None,
+) -> tuple[dict[str, object] | None, str | None]:
+    """Return (resolved config, stable set id) for one source trim."""
+    general = normalized_plate_binding(conversion.get("plate"))
+    conversion["plate"] = general
+    variants = conversion.get("variants", {})
+    settings = variants.get(config_name) if isinstance(variants, dict) else None
+    if isinstance(settings, dict):
+        override = normalized_plate_binding(settings.get("plate"), variant=True)
+        settings["plate"] = override
+    else:
+        override = default_plate_binding(variant=True)
+    if override["mode"] == PLATE_MODE_GENERAL:
+        binding = general
+    elif override["mode"] == PLATE_MODE_TRIM:
+        source_config = str(override.get("sourceConfig") or "")
+        source_settings = variants.get(source_config) if isinstance(variants, dict) else None
+        if isinstance(source_settings, dict):
+            source_binding = normalized_plate_binding(source_settings.get("plate"), variant=True)
+            source_settings["plate"] = source_binding
+            config = normalized_plate_config(source_binding.get("customConfig"))
+            config["enabled"] = True
+            override["config"] = copy.deepcopy(config)
+            return config, None
+        snapshot = normalized_plate_config(override.get("config"))
+        snapshot["enabled"] = True
+        if warnings is not None:
+            warnings.append(
+                f"{config_name}: custom plate source '{source_config}' is missing; using its last saved snapshot"
+            )
+        return snapshot, None
+    else:
+        binding = override
+    return _resolved_binding_config(binding, warnings=warnings, label=config_name)
 
 
 def effective_plate_config(conversion: dict[str, object], config_name: str) -> dict[str, object] | None:
     """The plate config that applies to one trim, or None when plates are off."""
-    general = conversion.get("plate")
-    variants = conversion.get("variants", {})
-    settings = variants.get(config_name) if isinstance(variants, dict) else None
-    mode = variant_plate_mode(settings)
-    if mode == "off":
-        return None
-    if mode == "custom":
-        override = settings.get("plate", {}).get("config")
-        cfg = normalized_plate_config(override)
-        cfg["enabled"] = True
-        return cfg
-    cfg = normalized_plate_config(general)
-    return cfg if cfg.get("enabled") else None
+    return effective_plate_selection(conversion, config_name)[0]
 
 
 def active_section(cfg: dict[str, object]) -> dict[str, object]:
@@ -186,9 +380,15 @@ def active_pattern(cfg: dict[str, object]) -> str:
 
 
 def plate_summary_label(conversion: dict[str, object]) -> str:
-    cfg = normalized_plate_config(conversion.get("plate"))
-    if not cfg.get("enabled"):
+    binding = normalized_plate_binding(conversion.get("plate"))
+    mode = str(binding.get("mode"))
+    if mode == PLATE_MODE_OFF:
         return "Off"
+    if mode == PLATE_MODE_SET:
+        set_id = str(binding.get("setId") or "")
+        record = plate_set_by_id(set_id)
+        return str(record.get("name")) if record else f"Missing set: {set_id}"
+    cfg = normalized_plate_config(binding.get("config"))
     return f"{cfg['size']}  ·  {active_pattern(cfg) or 'no pattern'}"
 
 
@@ -294,7 +494,10 @@ def _split_two_line_text(text: str) -> tuple[str, str]:
 
 
 def _pattern_glyphs(pattern: str) -> set[str]:
-    glyphs = set(_ALNUM) | {" "}
+    # Designs are also usable on stock vehicles where BeamNG, rather than a
+    # BeamHDC registration pattern, supplies the text. Keep the inexpensive
+    # universal glyph coverage in every atlas so punctuation never vanishes.
+    glyphs = set(_ALNUM) | {" ", "-", "."}
     for ch in str(pattern or "").strip():
         if ch not in "@#~":
             glyphs.add(ch.upper())
@@ -1335,7 +1538,14 @@ class _DesignOutput:
         self.rear_formats = rear_formats  # vanilla fmt -> rear fmt id (empty when front==rear)
 
 
-def _emit_design(cfg: dict[str, object], output_root: Path, prefix: str, cache: dict[str, _DesignOutput]) -> _DesignOutput:
+def _emit_design(
+    cfg: dict[str, object],
+    output_root: Path,
+    prefix: str,
+    cache: dict[str, _DesignOutput],
+    *,
+    set_id: str | None = None,
+) -> _DesignOutput:
     import beamng_hand_drive_core as core
 
     font_path = resolve_font_path(cfg.get("font"))
@@ -1344,7 +1554,8 @@ def _emit_design(cfg: dict[str, object], output_root: Path, prefix: str, cache: 
     emboss_strength = _effective_emboss_strength(cfg)
     font_key = _font_atlas_key(font_path, glyphs, spacing, emboss_strength)
     design_key = _design_key(cfg, font_key)
-    cached = cache.get(design_key)
+    cache_key = f"{design_key}:{set_id or ''}"
+    cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
@@ -1406,22 +1617,26 @@ def _emit_design(cfg: dict[str, object], output_root: Path, prefix: str, cache: 
             formats[rear_fmt] = format_block(rear_fmt, rear=True)
 
     design_json = {
-        "name": f"BeamHDC {cfg.get('size')} plate design",
+        "name": "BeamHDC Custom" if set_id is None else f"BeamHDC {cfg.get('size')} plate design",
         "version": 2,
         "data": {"format": formats},
     }
     core.write_text_file(design_dir / "licensePlate.json", json.dumps(design_json, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    part_id = f"bhdc_plate_design_{design_key}"
+    part_id = f"bhdc_plateset_{_safe_set_id(set_id).replace('-', '_')}" if set_id else f"bhdc_plate_design_{design_key}"
     out = _DesignOutput(design_key, part_id, rear_formats)
     out.design_json_rel = f"{design_rel}/licensePlate.json"
-    cache[design_key] = out
+    cache[cache_key] = out
     return out
 
 
-def _design_part_body(out: _DesignOutput, size_label: str) -> str:
+def _design_part_body(out: _DesignOutput, size_label: str, *, custom: bool = False) -> str:
     return json.dumps({
-        "information": {"authors": "BeamHDC", "name": f"BeamHDC {size_label} Plate Design", "value": 0},
+        "information": {
+            "authors": "BeamHDC",
+            "name": "BeamHDC Custom" if custom else f"BeamHDC {size_label} Plate Design",
+            "value": 0,
+        },
         "slotType": _DESIGN_SLOT,
         "licenseplate_path": out.design_json_rel,
     }, indent=4)
@@ -1528,6 +1743,51 @@ class _RearMeshClone:
     output_mesh: str
 
 
+@dataclass(frozen=True)
+class PlatePartOption:
+    """One user-facing physical plate choice for a trim side."""
+
+    value: str
+    label: str
+    part_id: str | None
+    mesh: str | None
+    format: str | None
+    is_default: bool = False
+
+
+@dataclass(frozen=True)
+class _ModelPlatePart:
+    part_id: str
+    name: str
+    body: str
+    filename: str
+    slot_types: tuple[str, ...]
+    rear: bool
+    format: str
+    meshes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ConfigPlateSlot:
+    slot_type: str
+    current_part: str
+    current_body: str
+    rear: bool
+
+
+@dataclass(frozen=True)
+class _VanillaPlateMesh:
+    mesh: str
+    format: str
+
+
+@dataclass(frozen=True)
+class _ResolvedPlatePart:
+    part: _ModelPlatePart
+    mesh: str
+    format: str
+
+
 _JBEAM_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 _HIDDEN_PLATE_COORD = 1000.0
 
@@ -1570,7 +1830,224 @@ def _part_uses_wide_plate(part_body: str) -> bool:
     return _part_plate_width(part_body) is True
 
 
-def _iter_selected_plate_parts(context, config_name: str):
+def _model_plate_part_catalog(context) -> list[_ModelPlatePart]:
+    """Return every physical plate part defined by the loaded vehicle model.
+
+    Shared BeamNG plate *meshes* are intentionally allowed, but shared/common
+    JBeam parts are not: their slot types and placement groups belong to other
+    models.  Parts from any slot family in this model remain eligible so a
+    donor can be cloned into the trim's active plate slot at build time.
+    """
+    import beamng_hand_drive_core as core
+
+    cached = getattr(context, "_bhdc_model_plate_parts", None)
+    if isinstance(cached, list):
+        return cached
+
+    vehicle_prefix = str(context.vehicle_path).replace("\\", "/").rstrip("/").lower() + "/"
+    catalog: list[_ModelPlatePart] = []
+    for part_id, (body, filename) in context.part_body_index.items():
+        filename_text = str(filename).replace("\\", "/")
+        filename_lower = filename_text.lower()
+        # Hand-built/test contexts use short filenames; real BeamNG paths are
+        # constrained to the selected vehicle rather than vehicles/common or
+        # another vehicle archive.
+        if filename_lower.startswith("vehicles/") and not filename_lower.startswith(vehicle_prefix):
+            continue
+        slot_types = tuple(
+            sorted(
+                slot
+                for slot in transform_helpers.extract_part_slot_types(body)
+                if "licenseplate" in slot.lower() and "design" not in slot.lower()
+            )
+        )
+        if not slot_types:
+            continue
+        meshes = tuple(
+            sorted(
+                mesh
+                for mesh in transform_helpers.extract_part_mesh_names(body)
+                if "licenseplate" in mesh.lower()
+            )
+        )
+        if not meshes and "licenseplateformat" not in body.lower():
+            continue
+        if _plate_part_is_hidden(body):
+            continue
+        width = _part_plate_width(body)
+        fmt = _FORMAT_WIDE if width is True else _FORMAT_2_1
+        name = core.part_information_name(body) or str(part_id)
+        for rear in sorted({_looks_rear(slot, str(part_id), body) for slot in slot_types}):
+            side_slots = tuple(
+                slot for slot in slot_types if _looks_rear(slot, str(part_id), body) == rear
+            )
+            if not side_slots:
+                continue
+            catalog.append(
+                _ModelPlatePart(
+                    part_id=str(part_id),
+                    name=name,
+                    body=body,
+                    filename=filename_text,
+                    slot_types=side_slots,
+                    rear=rear,
+                    format=fmt,
+                    meshes=meshes,
+                )
+            )
+    catalog.sort(key=lambda part: (part.rear, part.name.lower(), part.part_id.lower()))
+    setattr(context, "_bhdc_model_plate_parts", catalog)
+    return catalog
+
+
+_VANILLA_PLATE_MESH_RE = re.compile(
+    r"^licenseplate(?:-52-11(?:-(?:r\d+(?:_\d+)?|b\d+))?)?$",
+    re.IGNORECASE,
+)
+
+
+def _vanilla_plate_mesh_sort_key(item: _VanillaPlateMesh) -> tuple[object, ...]:
+    if item.format == _FORMAT_2_1:
+        return (0, 0, item.mesh.lower())
+    suffix = item.mesh.lower().partition("licenseplate-52-11-")[2]
+    if not suffix:
+        return (1, 0, item.mesh.lower())
+    if suffix.startswith("r"):
+        try:
+            radius = float(suffix[1:].replace("_", "."))
+        except ValueError:
+            radius = 0.0
+        return (1, 1, -radius, item.mesh.lower())
+    return (1, 2, suffix)
+
+
+def _vanilla_plate_mesh_catalog(context) -> list[_VanillaPlateMesh]:
+    """Discover the shared physical plate meshes from BeamNG's common.zip."""
+    import beamng_hand_drive_core as core
+
+    cached = getattr(context, "_bhdc_vanilla_plate_meshes", None)
+    if isinstance(cached, list):
+        return cached
+
+    formats_by_mesh: dict[str, str] = {}
+    for candidate_zip in core.common_zip_candidates(context.source_zip):
+        for dae_path in core.common_dae_paths(candidate_zip):
+            path_lower = dae_path.lower()
+            if "licenseplate" not in path_lower and not path_lower.endswith("/empty.dae"):
+                continue
+            try:
+                objects = core.list_dae_objects_for_file(candidate_zip, dae_path)
+            except Exception:
+                continue
+            for object_id, obj in objects.items():
+                for mesh in (str(object_id), str(obj.name)):
+                    if not _VANILLA_PLATE_MESH_RE.fullmatch(mesh):
+                        continue
+                    formats_by_mesh.setdefault(
+                        mesh,
+                        _FORMAT_WIDE if mesh.lower().startswith("licenseplate-52-11") else _FORMAT_2_1,
+                    )
+                    # Rear-colour splitting clones the selected geometry into
+                    # a BeamHDC-owned DAE/material.  Register newly discovered
+                    # common meshes so that path can preserve every curvature,
+                    # including shapes this model did not originally use.
+                    context.objects.setdefault(mesh, obj)
+
+    # A community model can ship a physical plate mesh outside common.zip.
+    # Keep those model-local options available alongside the shared catalogue.
+    for part in _model_plate_part_catalog(context):
+        for mesh in part.meshes:
+            formats_by_mesh.setdefault(mesh, part.format)
+
+    catalog = [
+        _VanillaPlateMesh(mesh=mesh, format=fmt)
+        for mesh, fmt in formats_by_mesh.items()
+    ]
+    catalog.sort(key=_vanilla_plate_mesh_sort_key)
+    setattr(context, "_bhdc_vanilla_plate_meshes", catalog)
+    return catalog
+
+
+def _plate_slots_by_side_for_config(context, config_name: str) -> dict[str, list[_ConfigPlateSlot]]:
+    """Find the active front/rear plate slots and their stock selections.
+
+    Unlike the old detector this retains explicitly empty slots, which is how
+    trims such as the Sunburst's US configurations express "no front plate".
+    """
+    import beamng_hand_drive_core as core
+
+    cache = getattr(context, "_bhdc_plate_slots_by_config", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(context, "_bhdc_plate_slots_by_config", cache)
+    cached = cache.get(config_name)
+    if isinstance(cached, dict):
+        return cached
+
+    variant = context.variants.get(config_name)
+    if variant is None:
+        result = {"front": [], "rear": []}
+        cache[config_name] = result
+        return result
+
+    pc = core.load_pc(context.source_zip, variant.pc_path)
+    explicit = {
+        str(slot_type): str(part_id or "")
+        for slot_type, part_id in dict(pc.get("parts", {})).items()
+    }
+    explicit_plate_slots = {
+        slot: part
+        for slot, part in explicit.items()
+        if "licenseplate" in slot.lower() and "design" not in slot.lower()
+    }
+    if explicit_plate_slots:
+        # Vanilla .pc files normally spell out both physical plate slots,
+        # including an empty string for no plate.  This path avoids resolving
+        # the trim's complete slot graph merely to rediscover those two keys.
+        current_by_slot = explicit_plate_slots
+    else:
+        selected = core.selected_parts_for_config(context, config_name)
+        selected_by_slot = selected.get("selected_by_slot", {})
+        selected_by_slot = selected_by_slot if isinstance(selected_by_slot, dict) else {}
+
+        current_by_slot: dict[str, str] = {}
+        # Capture empty defaults declared by the active body/bumper as well as
+        # non-empty defaults already resolved by selected_parts_for_config().
+        for selected_part in sorted(str(part) for part in selected.get("parts", set())):
+            found = core.part_body_for_context(context, selected_part)
+            if found is None:
+                continue
+            for slot_def in core.extract_slot_defs(found[0]):
+                current_by_slot.setdefault(slot_def.slot_type, slot_def.default_part)
+        current_by_slot.update({str(slot): str(part or "") for slot, part in selected_by_slot.items()})
+
+    catalog = _model_plate_part_catalog(context)
+    result: dict[str, list[_ConfigPlateSlot]] = {"front": [], "rear": []}
+    for slot_type, current_part in sorted(current_by_slot.items()):
+        slot_lower = slot_type.lower()
+        if "licenseplate" not in slot_lower or "design" in slot_lower:
+            continue
+        found = core.part_body_for_context(context, current_part) if current_part else None
+        current_body = found[0] if found is not None else ""
+        rear = _looks_rear(slot_type, current_part, current_body)
+        # Generic/empty slot names have no body position to inspect.  Let the
+        # model catalogue decide when all parts for that slot agree on a side.
+        if not current_part and not _REAR_NAME_RE.search(slot_type) and not _FRONT_NAME_RE.search(slot_type):
+            catalog_sides = {part.rear for part in catalog if slot_type in part.slot_types}
+            if len(catalog_sides) == 1:
+                rear = catalog_sides.pop()
+        side = "rear" if rear else "front"
+        result[side].append(_ConfigPlateSlot(slot_type, current_part, current_body, rear))
+    cache[config_name] = result
+    return result
+
+
+def _iter_selected_plate_parts(
+    context,
+    config_name: str,
+    parts_override: dict[str, object] | None = None,
+    generated_part_bodies: dict[str, str] | None = None,
+):
     """Yield (slot_type, part_id, part_body) for a config's licence plate
     parts, skipping the design slot and parts without a resolvable body."""
     import beamng_hand_drive_core as core
@@ -1579,9 +2056,18 @@ def _iter_selected_plate_parts(context, config_name: str):
     selected_by_slot = selected.get("selected_by_slot", {}) if isinstance(selected, dict) else {}
     if not isinstance(selected_by_slot, dict):
         return
-    for slot_type, part_id in sorted(selected_by_slot.items()):
+    resolved_slots = dict(selected_by_slot)
+    if isinstance(parts_override, dict):
+        for slot_type, part_id in parts_override.items():
+            slot_text = str(slot_type)
+            part_text = str(part_id or "")
+            if "licenseplate" in slot_text.lower() or "licenseplate" in part_text.lower():
+                resolved_slots[slot_text] = part_text
+    for slot_type, part_id in sorted(resolved_slots.items()):
         slot_text = str(slot_type)
         part_text = str(part_id)
+        if not part_text:
+            continue
         slot_lower = slot_text.lower()
         part_lower = part_text.lower()
         if "design" in slot_lower or "design" in part_lower:
@@ -1589,33 +2075,463 @@ def _iter_selected_plate_parts(context, config_name: str):
         if "licenseplate" not in slot_lower and "licenseplate" not in part_lower:
             continue
         found = core.part_body_for_context(context, part_text)
-        if found is None:
+        body = found[0] if found is not None else None
+        if body is None and isinstance(generated_part_bodies, dict):
+            body = generated_part_bodies.get(part_text)
+        if body is None:
             continue
-        yield slot_text, part_text, found[0]
+        yield slot_text, part_text, body
 
 
-def preview_format_for_config(context, config_name: str, side: str = "front") -> str | None:
-    """Return the stock BeamNG plate format used by one side of a config."""
+def _plate_slots_for_side(context, config_name: str, side: str) -> list[tuple[str, str, str]]:
+    side_key = "rear" if str(side).lower() == "rear" else "front"
+    return [
+        (slot.slot_type, slot.current_part, slot.current_body)
+        for slot in _plate_slots_by_side_for_config(context, config_name)[side_key]
+    ]
+
+
+def _plate_mesh_label(mesh: str, fmt: str) -> str:
+    if fmt == _FORMAT_2_1:
+        return "US/JP"
+    suffix = mesh.lower().partition("licenseplate-52-11-")[2]
+    if not suffix:
+        return "EU Flat"
+    elif suffix.startswith("r"):
+        return f"EU R{suffix[1:].replace('_', '.')}"
+    elif suffix.startswith("b"):
+        return f"EU {suffix[1:]}°"
+    return f"EU {suffix.upper()}"
+
+
+def _model_plate_part_by_id(context, part_id: str, *, rear: bool) -> _ModelPlatePart | None:
+    return next(
+        (part for part in _model_plate_part_catalog(context) if part.part_id == part_id and part.rear == rear),
+        None,
+    )
+
+
+def _plate_part_base_label(part: _ModelPlatePart) -> str:
+    return _plate_mesh_label(part.meshes[0], part.format) if part.meshes else part.name
+
+
+def plate_part_choices_for_config(context, config_name: str, side: str) -> list[PlatePartOption]:
+    """Shared vanilla meshes, applied through this model's plate JBeam parts."""
+    rear = str(side).lower() == "rear"
+    slots = _plate_slots_for_side(context, config_name, side)
+    model_catalog = [part for part in _model_plate_part_catalog(context) if part.rear == rear]
+    raw_labels = [_plate_part_base_label(part) for part in model_catalog]
+    duplicate_labels = {label for label in raw_labels if raw_labels.count(label) > 1}
+
+    def display(part: _ModelPlatePart) -> str:
+        label = _plate_part_base_label(part)
+        return f"{label} [{part.part_id}]" if label in duplicate_labels else label
+
+    default_ids = list(dict.fromkeys(part_id for _slot, part_id, _body in slots if part_id))
+    if not slots:
+        default_label = "No plate slot (default)"
+        default_format = None
+        default_part = None
+        default_mesh = None
+    elif not default_ids:
+        default_label = "None (default)"
+        default_format = None
+        default_part = None
+        default_mesh = None
+    elif len(default_ids) == 1:
+        default_part = default_ids[0]
+        record = _model_plate_part_by_id(context, default_part, rear=rear)
+        if record is not None:
+            default_format = record.format
+            default_mesh = record.meshes[0] if record.meshes else None
+            default_label = (
+                f"{_plate_mesh_label(default_mesh, default_format)} (default)"
+                if default_mesh
+                else f"{display(record)} (default)"
+            )
+        else:
+            body = next((body for _slot, part_id, body in slots if part_id == default_part), "")
+            default_label = f"{default_part} (default)"
+            default_format = _FORMAT_WIDE if _part_uses_wide_plate(body) else _FORMAT_2_1
+            default_mesh = next(
+                (
+                    mesh
+                    for mesh in transform_helpers.extract_part_mesh_names(body)
+                    if "licenseplate" in mesh.lower()
+                ),
+                None,
+            )
+            if default_mesh:
+                default_label = f"{_plate_mesh_label(default_mesh, default_format)} (default)"
+    else:
+        default_part = None
+        default_label = "Current plate combination (default)"
+        default_format = None
+        default_mesh = None
+
+    choices = [
+        PlatePartOption(
+            value=PLATE_PART_AUTO,
+            label=default_label,
+            part_id=default_part,
+            mesh=default_mesh,
+            format=default_format,
+            is_default=True,
+        )
+    ]
+    default_meshes = {
+        mesh
+        for _slot, part_id, body in slots
+        if part_id
+        for mesh in transform_helpers.extract_part_mesh_names(body)
+        if "licenseplate" in mesh.lower()
+    }
+    if slots and model_catalog:
+        for plate_mesh in _vanilla_plate_mesh_catalog(context):
+            if plate_mesh.mesh in default_meshes:
+                continue
+            choices.append(
+                PlatePartOption(
+                    value=f"{PLATE_MESH_CHOICE_PREFIX}{plate_mesh.mesh}",
+                    label=_plate_mesh_label(plate_mesh.mesh, plate_mesh.format),
+                    part_id=None,
+                    mesh=plate_mesh.mesh,
+                    format=plate_mesh.format,
+                )
+            )
+    if slots and default_ids:
+        choices.append(
+            PlatePartOption(
+                value=PLATE_PART_NONE,
+                label="None",
+                part_id=None,
+                mesh=None,
+                format=None,
+            )
+        )
+    return choices
+
+
+def plate_part_options_for_config(context, config_name: str, side: str) -> list[str]:
+    return [choice.value for choice in plate_part_choices_for_config(context, config_name, side)]
+
+
+def plate_part_label_for_config(context, config_name: str, side: str, value: object) -> str:
+    normalized = normalized_plate_part_choice(value)
+    choices = plate_part_choices_for_config(context, config_name, side)
+    for choice in choices:
+        if choice.value == normalized:
+            return choice.label
+    rear = str(side).lower() == "rear"
+    record = _model_plate_part_by_id(context, normalized, rear=rear)
+    if record is not None:
+        default_choice = choices[0] if choices else None
+        if default_choice is not None and default_choice.part_id == normalized:
+            return default_choice.label
+        return _plate_part_base_label(record)
+    if normalized in {PLATE_PART_2_1, PLATE_PART_WIDE}:
+        slots = _plate_slots_for_side(context, config_name, side)
+        if slots:
+            slot_type, current_part, _body = slots[0]
+            candidate = _best_plate_candidate(context, slot_type, current_part, normalized, rear=rear)
+            if candidate is not None:
+                candidate_record = _model_plate_part_by_id(context, candidate, rear=rear)
+                if candidate_record is not None:
+                    default_choice = choices[0] if choices else None
+                    if default_choice is not None and default_choice.part_id == candidate:
+                        return default_choice.label
+                    return _plate_part_base_label(candidate_record)
+        return "EU wide (legacy)" if normalized == PLATE_PART_WIDE else "US 2:1 (legacy)"
+    return f"Missing plate: {normalized}"
+
+
+def normalized_plate_part_choice(value: object) -> str:
+    if not isinstance(value, str):
+        return PLATE_PART_AUTO
+    text = value.strip()
+    if not text or text == "default":
+        return PLATE_PART_AUTO
+    return text
+
+
+def variant_has_plate_changes(conversion: dict[str, object], config_name: str, context=None) -> bool:
+    variants = conversion.get("variants", {})
+    settings = variants.get(config_name) if isinstance(variants, dict) else None
+    front = normalized_plate_part_choice(settings.get("frontPlate")) if isinstance(settings, dict) else PLATE_PART_AUTO
+    rear = normalized_plate_part_choice(settings.get("rearPlate")) if isinstance(settings, dict) else PLATE_PART_AUTO
+    if effective_plate_config(conversion, config_name) is not None:
+        return True
+    if context is None:
+        return front != PLATE_PART_AUTO or rear != PLATE_PART_AUTO
+    return _plate_part_choice_changes(context, config_name, "front", front) or _plate_part_choice_changes(
+        context, config_name, "rear", rear
+    )
+
+
+def _plate_part_choice_changes(context, config_name: str, side: str, value: str) -> bool:
+    choice = normalized_plate_part_choice(value)
+    if choice == PLATE_PART_AUTO:
+        return False
+    slots = _plate_slots_for_side(context, config_name, side)
+    if not slots:
+        return False
+    if choice == PLATE_PART_NONE:
+        return any(current_part for _slot, current_part, _body in slots)
+    rear = str(side).lower() == "rear"
+    for slot_type, current_part, _body in slots:
+        candidate = _requested_plate_part(context, slot_type, current_part, choice, rear=rear)
+        if candidate is None:
+            return True
+        current_meshes = {
+            mesh
+            for mesh in transform_helpers.extract_part_mesh_names(_body)
+            if "licenseplate" in mesh.lower()
+        }
+        if (
+            candidate.part.part_id != current_part
+            or slot_type not in candidate.part.slot_types
+            or candidate.mesh not in current_meshes
+        ):
+            return True
+    return False
+
+
+def _best_plate_candidate(
+    context,
+    slot_type: str,
+    current_part: str,
+    wanted_format: str,
+    *,
+    rear: bool,
+) -> str | None:
+    candidates: list[tuple[int, str]] = []
+    current_prefix = _plate_part_prefix(current_part)
+    for part in _model_plate_part_catalog(context):
+        if part.rear != rear or part.format != wanted_format:
+            continue
+        score = 0
+        if slot_type in part.slot_types:
+            score += 100
+        if current_prefix and _plate_part_prefix(part.part_id) == current_prefix:
+            score += 20
+        if "wide" in part.part_id.lower() and wanted_format == _FORMAT_WIDE:
+            score += 3
+        candidates.append((-score, part.part_id))
+    return min(candidates)[1] if candidates else None
+
+
+def _requested_plate_part(
+    context,
+    slot_type: str,
+    current_part: str,
+    choice: str,
+    *,
+    rear: bool,
+) -> _ResolvedPlatePart | None:
+    selected_mesh: str | None = None
+    selected_format: str | None = None
+    if choice.startswith(PLATE_MESH_CHOICE_PREFIX):
+        selected_mesh = choice[len(PLATE_MESH_CHOICE_PREFIX) :]
+        mesh_record = next(
+            (record for record in _vanilla_plate_mesh_catalog(context) if record.mesh == selected_mesh),
+            None,
+        )
+        if mesh_record is None:
+            return None
+        selected_format = mesh_record.format
+        exact = [
+            part
+            for part in _model_plate_part_catalog(context)
+            if part.rear == rear and selected_mesh in part.meshes
+        ]
+        if exact:
+            exact.sort(
+                key=lambda part: (
+                    0 if slot_type in part.slot_types else 1,
+                    0 if part.part_id == current_part else 1,
+                    part.part_id,
+                )
+            )
+            return _ResolvedPlatePart(exact[0], selected_mesh, selected_format)
+
+        # The mesh is global but unused by this model.  Reuse the closest
+        # model-specific placement and swap only its mesh/format.
+        donor_id = _best_plate_candidate(
+            context,
+            slot_type,
+            current_part,
+            selected_format,
+            rear=rear,
+        )
+        donor = _model_plate_part_by_id(context, donor_id or current_part, rear=rear)
+        if donor is None:
+            donor = next(
+                (part for part in _model_plate_part_catalog(context) if part.rear == rear),
+                None,
+            )
+        return _ResolvedPlatePart(donor, selected_mesh, selected_format) if donor is not None else None
+
+    if choice in {PLATE_PART_2_1, PLATE_PART_WIDE}:
+        part_id = _best_plate_candidate(context, slot_type, current_part, choice, rear=rear)
+        part = _model_plate_part_by_id(context, part_id or "", rear=rear)
+    else:
+        part = _model_plate_part_by_id(context, choice, rear=rear)
+    if part is None:
+        return None
+    mesh = part.meshes[0] if part.meshes else ""
+    return _ResolvedPlatePart(part, mesh, part.format) if mesh else None
+
+
+def _plate_part_alias_id(part_id: str, slot_type: str, mesh: str) -> str:
+    import beamng_hand_drive_core as core
+
+    digest = hashlib.sha1(f"{slot_type}|{mesh}".encode("utf-8", errors="replace")).hexdigest()[:8]
+    return core.safe_id(f"bhdc_plate_{part_id}_{digest}")
+
+
+def _clone_plate_part_for_slot(
+    part: _ModelPlatePart,
+    slot_type: str,
+    new_part_id: str,
+    mesh: str,
+    fmt: str,
+) -> str:
+    body = transform_helpers.replace_first(part.body, f'"{part.part_id}"', f'"{new_part_id}"')
+    body = _force_slot_type(body, slot_type)
+    body = _rewrite_part_mesh_names(body, {source: mesh for source in part.meshes})
+    return _force_licenseplate_format(body, fmt)
+
+
+def _apply_plate_part_choices(
+    context,
+    config_name: str,
+    parts: dict[str, object],
+    front_choice: str,
+    rear_choice: str,
+    generated_part_bodies: dict[str, str],
+    summary: dict[str, object],
+) -> bool:
+    changed = False
+    for side, choice in (("front", front_choice), ("rear", rear_choice)):
+        choice = normalized_plate_part_choice(choice)
+        if choice == PLATE_PART_AUTO:
+            continue
+        is_rear = side == "rear"
+        slots = _plate_slots_for_side(context, config_name, side)
+        if not slots:
+            summary["warnings"].append(f"{config_name}: no {side} licence plate slot found")
+            continue
+        for slot_type, current_part, _body in slots:
+            if choice == PLATE_PART_NONE:
+                parts[slot_type] = ""
+                changed = changed or bool(current_part)
+                continue
+            candidate = _requested_plate_part(
+                context,
+                slot_type,
+                current_part,
+                choice,
+                rear=is_rear,
+            )
+            if candidate is None:
+                summary["warnings"].append(
+                    f"{config_name}: model plate part '{choice}' is unavailable for the {side}; keeping {current_part or 'None'}"
+                )
+                continue
+            donor = candidate.part
+            selected_part = donor.part_id
+            if slot_type not in donor.slot_types or candidate.mesh not in donor.meshes:
+                selected_part = _plate_part_alias_id(donor.part_id, slot_type, candidate.mesh)
+                if selected_part not in generated_part_bodies:
+                    generated_part_bodies[selected_part] = _clone_plate_part_for_slot(
+                        donor,
+                        slot_type,
+                        selected_part,
+                        candidate.mesh,
+                        candidate.format,
+                    )
+                    summary["physicalPartsCloned"] = int(summary.get("physicalPartsCloned", 0)) + 1
+            parts[slot_type] = selected_part
+            changed = changed or selected_part != current_part
+    return changed
+
+
+def preview_pc_with_plate_parts(
+    context,
+    conversion: dict[str, object],
+    config_name: str,
+) -> tuple[dict[str, object], dict[str, str]]:
+    """Resolve the physical plate selections without writing a build.
+
+    The ModernGL preview uses the returned PC for both converted and original
+    layouts, so its layout toggle never silently restores the source plates.
+    Generated alias JBeam bodies are returned alongside it for part traversal.
+    Plate-design textures and rear-colour clones do not alter preview geometry
+    and are therefore intentionally omitted here.
+    """
+    import beamng_hand_drive_core as core
+
+    variant = context.variants[config_name]
+    pc = core.load_pc(context.source_zip, variant.pc_path)
+    parts = dict(pc.get("parts", {}))
+    variants = conversion.get("variants", {})
+    settings = variants.get(config_name, {}) if isinstance(variants, dict) else {}
+    if not isinstance(settings, dict):
+        settings = {}
+    generated_part_bodies: dict[str, str] = {}
+    summary: dict[str, object] = {"warnings": [], "physicalPartsCloned": 0}
+    _apply_plate_part_choices(
+        context,
+        config_name,
+        parts,
+        normalized_plate_part_choice(settings.get("frontPlate")),
+        normalized_plate_part_choice(settings.get("rearPlate")),
+        generated_part_bodies,
+        summary,
+    )
+    pc["parts"] = parts
+    return pc, generated_part_bodies
+
+
+def preview_format_for_config(
+    context,
+    config_name: str,
+    side: str = "front",
+    choice: object = PLATE_PART_AUTO,
+) -> str | None:
+    """Return the chosen physical plate format used by one trim side."""
     if context is None or not config_name:
         return None
+    normalized = normalized_plate_part_choice(choice)
+    if normalized == PLATE_PART_NONE:
+        return None
+    want_rear = str(side).lower() == "rear"
+    slots = _plate_slots_for_side(context, config_name, side)
+    if normalized in {PLATE_PART_2_1, PLATE_PART_WIDE}:
+        return normalized
+    if normalized.startswith(PLATE_MESH_CHOICE_PREFIX):
+        selected_mesh = normalized[len(PLATE_MESH_CHOICE_PREFIX) :]
+        record = next(
+            (item for item in _vanilla_plate_mesh_catalog(context) if item.mesh == selected_mesh),
+            None,
+        )
+        return record.format if record is not None else None
+    if normalized != PLATE_PART_AUTO:
+        record = _model_plate_part_by_id(context, normalized, rear=want_rear)
+        return record.format if record is not None else None
+
     try:
-        plate_parts = list(_iter_selected_plate_parts(context, config_name))
+        plate_parts = [slot for slot in slots if slot[1]]
     except Exception:
         return None
-
-    want_rear = str(side).lower() == "rear"
-    fallback: list[str] = []
     for slot_text, part_text, part_body in plate_parts:
-        side_matches = _looks_rear(slot_text, part_text, part_body) == want_rear
-        if want_rear and side_matches and _plate_part_is_hidden(part_body):
+        if want_rear and _plate_part_is_hidden(part_body):
             donor = _visible_rear_plate_donor(context, slot_text, part_text, part_body)
             if donor is not None:
                 _donor_id, part_body = donor
         fmt = _FORMAT_WIDE if _part_plate_width(part_body) else _FORMAT_2_1
-        if side_matches:
-            return fmt
-        fallback.append(fmt)
-    return fallback[0] if fallback else None
+        return fmt
+    return None
 
 
 def _plate_part_prefix(part_id: str) -> str:
@@ -1627,7 +2543,28 @@ def _plate_part_prefix(part_id: str) -> str:
 
 
 def _force_slot_type(part_body: str, slot_type: str) -> str:
-    return re.sub(r'("slotType"\s*:\s*)"[^"]*"', rf'\g<1>"{slot_type}"', part_body, count=1)
+    encoded = json.dumps(slot_type)
+    return re.sub(
+        r'("slotType"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|\[[^\]]*\])',
+        lambda match: match.group(1) + encoded,
+        part_body,
+        count=1,
+    )
+
+
+def _force_licenseplate_format(part_body: str, fmt: str) -> str:
+    encoded = json.dumps(fmt)
+    if re.search(r'"licenseplateFormat"\s*:', part_body):
+        return re.sub(
+            r'("licenseplateFormat"\s*:\s*)"(?:[^"\\]|\\.)*"',
+            lambda match: match.group(1) + encoded,
+            part_body,
+            count=1,
+        )
+    brace = part_body.find("{")
+    if brace < 0:
+        return part_body
+    return part_body[: brace + 1] + f'\n    "licenseplateFormat": {encoded},' + part_body[brace + 1 :]
 
 
 def _offset_plate_y(part_body: str, amount: float) -> str:
@@ -2198,7 +3135,7 @@ def apply_to_build(
     conversion: dict[str, object],
     output_root: Path,
     output_vehicle_dir: Path,
-    variant_targets: dict[str, str],
+    output_plans: list[dict[str, object]],
 ) -> dict[str, object]:
     """Generate plate assets for the built configs and update the written .pc
     files with a per-config random registration and the generated design."""
@@ -2208,19 +3145,34 @@ def apply_to_build(
         "configsUpdated": 0,
         "designs": 0,
         "rearPartsCloned": 0,
+        "physicalPartsCloned": 0,
+        "physicalSelectionsUpdated": 0,
         "warnings": [],
     }
-    plans: list[tuple[str, str, dict[str, object]]] = []
-    for config_name, target_hand in sorted(variant_targets.items()):
-        cfg = effective_plate_config(conversion, config_name)
+    plans: list[tuple[str, str, dict[str, object] | None, str | None, str, str]] = []
+    variants = conversion.get("variants", {})
+    for plan in output_plans:
+        config_name = str(plan["source"])
+        output_config = str(plan["output"])
+        cfg, set_id = effective_plate_selection(
+            conversion,
+            config_name,
+            warnings=summary["warnings"],
+        )
+        settings = variants.get(config_name) if isinstance(variants, dict) else None
+        front_choice = normalized_plate_part_choice(settings.get("frontPlate")) if isinstance(settings, dict) else PLATE_PART_AUTO
+        rear_choice = normalized_plate_part_choice(settings.get("rearPlate")) if isinstance(settings, dict) else PLATE_PART_AUTO
+        if cfg is None and front_choice == PLATE_PART_AUTO and rear_choice == PLATE_PART_AUTO:
+            continue
         if cfg is None:
+            plans.append((config_name, output_config, None, None, front_choice, rear_choice))
             continue
         errors = validate_plate_config(cfg)
         if errors:
             raise PlateError(
                 f"Licence plate settings for '{config_name}' are not buildable:\n- " + "\n- ".join(errors)
             )
-        plans.append((config_name, target_hand, cfg))
+        plans.append((config_name, output_config, cfg, set_id, front_choice, rear_choice))
     if not plans:
         return summary
 
@@ -2231,38 +3183,58 @@ def apply_to_build(
     rear_mesh_clone_sources: dict[str, _RearMeshClone] = {}
     rng = random.Random()
 
-    for config_name, target_hand, cfg in plans:
-        design = _emit_design(cfg, output_root, prefix, design_cache)
-        part_bodies.setdefault(design.part_id, _design_part_body(design, str(cfg.get("size"))))
-
-        output_config = core.variant_output_name(config_name, target_hand)
+    for config_name, output_config, cfg, set_id, front_choice, rear_choice in plans:
         pc_path = output_vehicle_dir / f"{output_config}.pc"
         if not pc_path.is_file():
             summary["warnings"].append(f"{config_name}: expected config file missing ({pc_path.name})")
             continue
         pc = core.load_beamng_json_file(pc_path)
         parts = dict(pc.get("parts", {}))
-        parts[_DESIGN_SLOT] = design.part_id
+        physical_changed = _apply_plate_part_choices(
+            context,
+            config_name,
+            parts,
+            front_choice,
+            rear_choice,
+            part_bodies,
+            summary,
+        )
+        if physical_changed:
+            summary["physicalSelectionsUpdated"] = int(summary["physicalSelectionsUpdated"]) + 1
 
-        if design.rear_formats:
-            cloned = _clone_rear_parts_for_config(
-                context,
-                config_name,
-                cfg,
-                design,
-                part_bodies,
-                rear_meshes_used,
-                rear_mesh_clone_sources,
-                parts,
-                summary,
+        if cfg is not None:
+            design = _emit_design(cfg, output_root, prefix, design_cache, set_id=set_id)
+            if set_id:
+                record = plate_set_by_id(set_id)
+                design_label = str(record.get("name")) if record is not None else set_id
+            else:
+                design_label = str(cfg.get("size"))
+            part_bodies.setdefault(
+                design.part_id,
+                _design_part_body(design, design_label, custom=set_id is None),
             )
-            if not cloned:
-                summary["warnings"].append(
-                    f"{config_name}: no rear plate part found; rear plate keeps the front colour"
+            parts[_DESIGN_SLOT] = design.part_id
+
+            if design.rear_formats and rear_choice != PLATE_PART_NONE:
+                cloned = _clone_rear_parts_for_config(
+                    context,
+                    config_name,
+                    cfg,
+                    design,
+                    part_bodies,
+                    rear_meshes_used,
+                    rear_mesh_clone_sources,
+                    parts,
+                    summary,
                 )
+                if not cloned:
+                    summary["warnings"].append(
+                        f"{config_name}: no rear plate part found; rear plate keeps the front colour"
+                    )
 
         pc["parts"] = parts
-        pc["licenseName"] = generate_registration(active_pattern(cfg), rng)
+        if cfg is not None:
+            pc["licenseName"] = generate_registration(active_pattern(cfg), rng)
         core.write_text_file(pc_path, json.dumps(pc, indent=2), encoding="utf-8")
         summary["configsUpdated"] += 1
 
@@ -2286,11 +3258,64 @@ def apply_to_build(
         jbeam_dir.mkdir(parents=True, exist_ok=True)
         body_text = ",\n".join(f'"{part_id}": {body}' if not body.lstrip().startswith(f'"{part_id}"') else body
                                for part_id, body in sorted(part_bodies.items()))
-        contents = "{\n// Generated licence plate designs (BeamHDC).\n" + body_text + "\n}\n"
+        contents = "{\n// Generated physical plate parts and designs (BeamHDC).\n" + body_text + "\n}\n"
         core.write_text_file(jbeam_dir / "bhdc_licenseplates.jbeam", contents, encoding="utf-8")
 
     summary["designs"] = len(design_cache)
     return summary
+
+
+def export_plate_sets(records: list[dict[str, object]], target_zip: Path) -> dict[str, object]:
+    """Write selected reusable designs as one universal BeamHDC plates mod."""
+    import beamng_hand_drive_core as core
+
+    if not records:
+        raise PlateError("Select at least one plate set to export")
+    output_root = target_zip.parent / "BeamHDC_plates_unpacked"
+    core.clean_dir(output_root)
+    cache: dict[str, _DesignOutput] = {}
+    part_bodies: dict[str, str] = {}
+    exported: list[str] = []
+    for record in records:
+        set_id = str(record.get("id") or "")
+        if not set_id:
+            continue
+        cfg = normalized_plate_config(record.get("config"))
+        cfg["enabled"] = True
+        errors = validate_plate_config(cfg)
+        if errors:
+            raise PlateError(f"Plate set '{record.get('name') or set_id}' is not buildable:\n- " + "\n- ".join(errors))
+        design = _emit_design(cfg, output_root, "bhdc_plates", cache, set_id=set_id)
+        part_bodies[design.part_id] = _design_part_body(design, str(record.get("name") or cfg.get("size")))
+        exported.append(set_id)
+
+    if not part_bodies:
+        raise PlateError("No valid plate sets were selected")
+    common_dir = output_root / "vehicles" / "common" / "licenseplates"
+    common_dir.mkdir(parents=True, exist_ok=True)
+    body_text = ",\n".join(
+        f'"{part_id}": {body}' for part_id, body in sorted(part_bodies.items())
+    )
+    core.write_text_file(
+        common_dir / "bhdc_plate_sets.jbeam",
+        "{\n// Reusable licence plate designs generated by BeamHDC.\n" + body_text + "\n}\n",
+        encoding="utf-8",
+    )
+    mod_info = output_root / "mod_info"
+    mod_info.mkdir(parents=True, exist_ok=True)
+    core.write_text_file(
+        mod_info / "info.json",
+        json.dumps({
+            "name": "BeamHDC Plate Sets",
+            "version": "1.0.0",
+            "authors": "BeamHDC",
+            "description": "Reusable BeamHDC licence plate designs for all supported vehicles.",
+        }, indent=2),
+        encoding="utf-8",
+    )
+    target_zip.parent.mkdir(parents=True, exist_ok=True)
+    core.make_zip(output_root, target_zip)
+    return {"zip": target_zip, "setIds": exported, "designs": len(part_bodies)}
 
 
 def _clone_rear_parts_for_config(
@@ -2307,7 +3332,12 @@ def _clone_rear_parts_for_config(
     import beamng_hand_drive_core as core
 
     cloned_any = False
-    for slot_text, part_text, part_body in _iter_selected_plate_parts(context, config_name):
+    for slot_text, part_text, part_body in _iter_selected_plate_parts(
+        context,
+        config_name,
+        parts,
+        part_bodies,
+    ):
         if not _looks_rear(slot_text, part_text, part_body):
             continue
         new_part_id = f"bhdc_rear_{core.safe_id(part_text)}"

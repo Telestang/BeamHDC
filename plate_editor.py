@@ -20,9 +20,9 @@ if TYPE_CHECKING:
     from beamng_hand_drive_tool import HandDriveToolApp
 
 PLATE_MODE_LABELS = {
-    "general": "Use general settings",
+    "general": "Use vehicle plate setting",
     "custom": "Custom for this trim",
-    "off": "No plates for this trim",
+    "off": "Off",
 }
 PLATE_FONT_DEFAULT_LABEL = "Default (system DIN)"
 PLATE_FONT_FOLDER_PREFIX = "Fonts folder: "
@@ -122,28 +122,53 @@ def _key_for_label(labels: dict[str, str], selected: str, default: str) -> str:
 class PlateEditorDialog(tk.Toplevel):
     """Editor for the general plate settings or a single trim's override."""
 
-    def __init__(self, app: "HandDriveToolApp", variant_name: str | None = None) -> None:
+    def __init__(
+        self,
+        app: "HandDriveToolApp",
+        variant_name: str | None = None,
+        *,
+        set_id: str | None = None,
+    ) -> None:
         super().__init__(app)
         self.app = app
         self.variant_name = variant_name
+        self.set_id = set_id
         self._preview_photo = None
         self._preview_job: str | None = None
         self._registration: str | None = None
+        self.vehicle_id = app.context.vehicle_id if app.context is not None else "vehicle"
+        self.plate_mode_labels = {
+            "general": app._vehicle_plate_label(),
+            "custom": f"Custom ({variant_name})" if variant_name else f"Custom ({self.vehicle_id})",
+            "off": "Off",
+        }
 
         conversion = app.conversion
-        general_cfg = plate_generator.normalized_plate_config(conversion.get("plate"))
-        if variant_name is None:
+        general_binding = plate_generator.normalized_plate_binding(conversion.get("plate"))
+        general_cfg = plate_generator.normalized_plate_config(general_binding.get("customConfig"))
+        if set_id is not None:
+            record = plate_generator.plate_set_by_id(set_id)
+            if record is None:
+                raise RuntimeError(f"Plate set '{set_id}' no longer exists")
+            self.cfg = plate_generator.normalized_plate_config(record.get("config"))
+            self.mode = "set"
+            self.title(f"Licence Plates - {record['name']}")
+        elif variant_name is None:
             self.mode = "general"
             self.cfg = general_cfg
             self.title("Licence Plates")
         else:
             settings = conversion.setdefault("variants", {}).setdefault(variant_name, {})
             self.mode = plate_generator.variant_plate_mode(settings)
-            override = settings.get("plate") if isinstance(settings, dict) else None
-            stored = override.get("config") if isinstance(override, dict) else None
+            override = plate_generator.normalized_plate_binding(
+                settings.get("plate") if isinstance(settings, dict) else None,
+                variant=True,
+            )
+            stored = override.get("customConfig")
             # Start a fresh override from the general settings so "Custom"
             # begins as a copy the user can tweak.
-            self.cfg = plate_generator.normalized_plate_config(stored if isinstance(stored, dict) else general_cfg)
+            source_cfg = stored if self.mode == plate_generator.PLATE_MODE_CUSTOM and isinstance(stored, dict) else general_cfg
+            self.cfg = plate_generator.normalized_plate_config(source_cfg)
             self.title(f"Licence Plates - {variant_name}")
 
         self.transient(app)
@@ -168,15 +193,24 @@ class PlateEditorDialog(tk.Toplevel):
 
         header = ttk.Frame(body)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        if self.variant_name is None:
-            ttk.Label(header, text="General plate settings").pack(side="left")
+        if self.set_id is not None:
+            record = plate_generator.plate_set_by_id(self.set_id)
+            name = str(record.get("name")) if record else self.set_id
+            ttk.Label(
+                header,
+                text=f"Editing set '{name}' - changes apply to every conversion that references it",
+            ).pack(side="left")
+        elif self.variant_name is None:
+            ttk.Label(header, text=f"Custom plate settings for {self.vehicle_id}").pack(side="left")
         else:
             ttk.Label(header, text="Plate settings for this trim").pack(side="left")
-            self.variant_mode_var = tk.StringVar(value=PLATE_MODE_LABELS.get(self.mode, PLATE_MODE_LABELS["general"]))
+            self.variant_mode_var = tk.StringVar(
+                value=self.plate_mode_labels.get(self.mode, self.plate_mode_labels["general"])
+            )
             mode_combo = ttk.Combobox(
                 header,
                 textvariable=self.variant_mode_var,
-                values=list(PLATE_MODE_LABELS.values()),
+                values=list(self.plate_mode_labels.values()),
                 state="readonly",
                 width=24,
             )
@@ -187,7 +221,7 @@ class PlateEditorDialog(tk.Toplevel):
         self.controls_frame.grid(row=1, column=0, sticky="ew")
         self.controls_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(self.controls_frame, text="Plate size").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.controls_frame, text="Plate type").grid(row=0, column=0, sticky="w")
         self.size_var = tk.StringVar(value=str(self.cfg.get("size")))
         size_combo = ttk.Combobox(
             self.controls_frame,
@@ -435,6 +469,10 @@ class PlateEditorDialog(tk.Toplevel):
         self._color_button(frame, "eu", "frontColor").grid(row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Label(frame, text="Rear background").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._color_button(frame, "eu", "rearColor").grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(
+            frame,
+            text="BeamHDC trim outputs use this; unchanged stock vehicles use the front colour.",
+        ).grid(row=1, column=2, sticky="w", padx=(10, 0), pady=(4, 0))
         ttk.Label(frame, text="Font colour").grid(row=2, column=0, sticky="w", pady=(4, 0))
         self._color_button(frame, "eu", "textColor").grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
         ttk.Label(frame, text="Character spacing").grid(row=3, column=0, sticky="w", pady=(4, 0))
@@ -452,9 +490,20 @@ class PlateEditorDialog(tk.Toplevel):
         band_combo.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
         band_combo.bind("<<ComboboxSelected>>", lambda _event: self._band_changed())
 
+        # The band-specific controls live in a rebuildable child frame. Match
+        # its label column to the parent grid so Country code/Band image line
+        # up with Front background, Side band, etc. Give spare width to the
+        # trailing column, not the entry column, so the example text stays
+        # beside the country-code entry.
+        frame.update_idletasks()
+        label_column_width = max(
+            (widget.winfo_reqwidth() for widget in frame.grid_slaves(column=0)),
+            default=0,
+        )
         self.band_detail = ttk.Frame(frame)
-        self.band_detail.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        self.band_detail.columnconfigure(1, weight=1)
+        self.band_detail.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.band_detail.columnconfigure(0, minsize=label_column_width)
+        self.band_detail.columnconfigure(2, weight=1)
         self._rebuild_band_detail()
 
     def _rebuild_band_detail(self) -> None:
@@ -604,8 +653,30 @@ class PlateEditorDialog(tk.Toplevel):
     def _preview_format(self) -> str | None:
         side = self.preview_side_var.get() if hasattr(self, "preview_side_var") else PLATE_PREVIEW_SIDE_FRONT
         config_name = self._preview_config_name()
-        fmt = plate_generator.preview_format_for_config(self.app.context, config_name or "", side.lower())
-        label = f"Format: {fmt}" if fmt else "Format: default"
+        choice = plate_generator.PLATE_PART_AUTO
+        if config_name:
+            variants = self.app.conversion.get("variants", {})
+            settings = variants.get(config_name) if isinstance(variants, dict) else None
+            if isinstance(settings, dict):
+                key = "rearPlate" if side == PLATE_PREVIEW_SIDE_REAR else "frontPlate"
+                choice = settings.get(key, plate_generator.PLATE_PART_AUTO)
+        fmt = plate_generator.preview_format_for_config(
+            self.app.context,
+            config_name or "",
+            side.lower(),
+            choice,
+        )
+        physical_label = ""
+        if config_name and self.app.context is not None:
+            physical_label = plate_generator.plate_part_label_for_config(
+                self.app.context,
+                config_name,
+                side.lower(),
+                choice,
+            )
+        label = f"Format: {fmt}" if fmt else "Format: no plate"
+        if physical_label:
+            label += f" — {physical_label}"
         if config_name:
             label += f" ({config_name})"
         self.preview_format_var.set(label)
@@ -798,9 +869,9 @@ class PlateEditorDialog(tk.Toplevel):
         self.app._place_modal_on_app_monitor(modal)
 
     def _editing_enabled(self) -> bool:
-        if self.variant_name is None:
+        if self.variant_name is None or self.set_id is not None:
             return True
-        return self.variant_mode_var.get() == PLATE_MODE_LABELS["custom"]
+        return self.variant_mode_var.get() == self.plate_mode_labels["custom"]
 
     def _sync_control_states(self) -> None:
         enabled = self._editing_enabled()
@@ -888,24 +959,46 @@ class PlateEditorDialog(tk.Toplevel):
     # -- apply/close ---------------------------------------------------------
 
     def _apply(self) -> None:
-        will_generate = True
-        if self.variant_name is None:
-            will_generate = bool(self.cfg.get("enabled"))
-        else:
-            will_generate = self._editing_enabled()
+        will_generate = True if self.variant_name is None else self._editing_enabled()
         if will_generate:
             errors = plate_generator.validate_plate_config(self.cfg)
             if errors:
                 self.app._show_error("Licence plates", "Fix these before applying:\n- " + "\n- ".join(errors), parent=self)
                 return
-        if self.variant_name is None:
-            self.app.conversion["plate"] = self.cfg
+        if self.set_id is not None:
+            record = plate_generator.plate_set_by_id(self.set_id)
+            if record is None:
+                self.app._show_error("Licence plates", f"Plate set '{self.set_id}' no longer exists", parent=self)
+                return
+            record["config"] = self.cfg
+            plate_generator.save_plate_set(record)
+        elif self.variant_name is None:
+            binding = plate_generator.normalized_plate_binding(self.app.conversion.get("plate"))
+            binding["mode"] = plate_generator.PLATE_MODE_CUSTOM
+            binding["setId"] = ""
+            binding["config"] = self.cfg
+            binding["customConfig"] = self.cfg
+            binding["customDefined"] = True
+            self.app.conversion["plate"] = binding
         else:
-            mode = _key_for_label(PLATE_MODE_LABELS, self.variant_mode_var.get(), "general")
+            mode = _key_for_label(self.plate_mode_labels, self.variant_mode_var.get(), "general")
             settings = self.app.conversion.setdefault("variants", {}).setdefault(self.variant_name, {})
             if isinstance(settings, dict):
-                settings["plate"] = {"mode": mode, "config": self.cfg}
+                existing = plate_generator.normalized_plate_binding(settings.get("plate"), variant=True)
+                settings["plate"] = {
+                    "mode": mode,
+                    "setId": "",
+                    "sourceConfig": self.variant_name if mode == plate_generator.PLATE_MODE_CUSTOM else "",
+                    "customDefined": bool(existing.get("customDefined")) or mode == plate_generator.PLATE_MODE_CUSTOM,
+                    "config": self.cfg,
+                    "customConfig": self.cfg
+                    if mode == plate_generator.PLATE_MODE_CUSTOM
+                    else existing.get("customConfig"),
+                }
         self.app._plate_settings_applied()
+        if self.set_id is not None:
+            record = plate_generator.plate_set_by_id(self.set_id)
+            self.app.status_var.set(f"Plate set '{record['name'] if record else self.set_id}' updated")
         self._close()
 
     def _close(self) -> None:

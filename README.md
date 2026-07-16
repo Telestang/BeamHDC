@@ -20,8 +20,11 @@ The tool is new. It has been working well in my own testing, but there may be is
 
 - Converts in both directions: LHD to RHD and RHD to LHD.
 - Lists `.pc` variants/trims and batch converts all selected variants in one build.
+- Can export a converted trim, a Plates Only copy of the original trim, or both in one vehicle mod.
+- Keeps reusable licence-plate sets in a global library and can export them as one universal plates mod.
+- Selects front and rear plate meshes independently from BeamNG's shared vanilla physical-plate library; each trim's stock part is labelled `(default)` and `None` is available per side.
 - Shows a live in-app 3D preview of the conversion that updates as you work.
-- Builds one output mod zip containing all selected converted variants and installs it into your BeamNG mods folder.
+- Builds one output mod zip containing all selected XP trim outputs and installs it into your BeamNG mods folder.
 - Lets each part be set to `Skip`, `Translate`, `Mirror Aesthetic`, or `Mirror Structural`.
 - Detects steering side where possible.
 - Estimates the translate distance from a steering-wheel reference part.
@@ -95,13 +98,13 @@ Running from source natively should also work - nothing in the tool is Windows-o
 
 ![The tool with a conversion in progress: parts coloured by mode in the live 3D preview](Screenshots/sunburst2_tool.png)
 
-The main window includes a live 3D preview of the selected `Preview output` trim. Feedback is instant: changing a part mode, offset, or any other conversion setting updates the preview immediately, with no build step.
+The main window includes a live 3D preview of the selected `Config` trim. Feedback is instant: changing a part mode, offset, plate mesh, or any other conversion setting updates the preview immediately, with no build step.
 
 - Left-drag orbits, right- or middle-drag pans, and the mouse wheel zooms.
 - Click a part in the viewport to select it in the parts table.
 - `H` (or `Shift+H`) hides/unhides the selected parts.
 - The `Opacity` slider makes the vehicle see-through so you can check buried interior parts.
-- The `Stock` checkbox switches between the conversion vehicle and the stock vehicle.
+- The `Original layout` checkbox removes the hand-drive mesh/prop transforms while retaining the selected replacement plates.
 - Parts are coloured by mode: grey for non-transformed parts, blue for `Translate`, orange for `Mirror Aesthetic`, and pink for `Mirror Structural`.
 
 ![Lowering the opacity reveals the converted interior through the bodywork](Screenshots/sunburst2_transparent_tool.png)
@@ -110,12 +113,12 @@ The in-app preview shows one trim/variant at a time.
 
 ## Blender Preview
 
-The Blender preview is optional. Use it when you want to see all the parts for every version of the trim at once, or inspect with full Blender tooling; the in-app preview is the quicker feedback loop for day-to-day tuning.
+The Blender preview is optional. Use it when you want to inspect the complete generated trim with full Blender tooling; the in-app preview is the quicker feedback loop for day-to-day tuning.
 
 The preview:
 
 - Builds the current unpacked output first.
-- Uses the selected `Preview output` config name.
+- Uses the selected `Config` entry.
 - Imports the final resolved vehicle for that output, including generated converted meshes and unchanged context meshes.
 - Does not require the BeamNG Blender JBeam Editor add-on.
 - Opens as a new unsaved Blender instance; nothing is written to disk unless you save it yourself from Blender.
@@ -177,6 +180,26 @@ Each project contains:
 - `blender_preview/`: Blender preview working files (payloads and extracted DAE caches), if used
 
 The configured BeamNG mods folder is only used as the install target for generated conversion zips.
+
+Vehicle builds use the filename `<source>_XP_conversion.zip`. Each trim's `Build` cell can be `Off`,
+`Converted`, `Plates Only`, or `Both`, so a converted and a Plates Only copy of the same source trim can
+live in that one archive. The in-app `Config` dropdown still lists that source trim only once; `Original
+layout` changes the previewed transform state without changing its selected plates.
+
+Reusable plate sets are stored separately under `%LOCALAPPDATA%/BeamHDC/plates/`. Renaming a set is
+safe because projects reference its fixed ID. Builds resolve the latest set contents and embed a
+snapshot; if a referenced set is later deleted, the snapshot is used with a build warning. The plate
+library can export selected sets to `BeamHDC_plates.zip` for use in the parts menu on stock vehicles.
+
+Model-local custom designs are labelled `Custom (<vehicle ID>)` and `Custom (<config name>)`. Once a
+trim custom exists, other trims can select it and share the same live definition without adding it to
+the global library. A trim's converted and Plates Only outputs deliberately share one plate selection;
+BeamNG's parts menu can still switch either vehicle to any generated custom or library design in game.
+
+On stock vehicles BeamNG controls the registration text; a BeamHDC pattern such as `@@## @@@` only
+generates registrations for exported trim configs. Different front/rear background colours require a
+converted or plates-only trim because BeamHDC must select a cloned rear plate part. Universal designs
+use the front colour on both sides.
 
 The output mod zip also embeds a copy of the conversion settings at:
 

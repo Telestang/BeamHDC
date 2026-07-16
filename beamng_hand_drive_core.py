@@ -43,7 +43,7 @@ WORKSPACE_DIR = USER_DATA_DIR
 THIS_DIR = APP_DIR
 PROJECTS_DIR = USER_DATA_DIR / "handedness_conversion_projects"
 APP_SETTINGS_PATH = USER_DATA_DIR / "hand_drive_tool_settings.json"
-TOOL_VERSION = 1
+TOOL_VERSION = 2
 
 HAND_LHD = "LHD"
 HAND_RHD = "RHD"
@@ -59,6 +59,11 @@ MODE_MIRROR = "mirror"
 MODE_MIRROR_STRUCTURAL = "mirrorStructural"
 MODE_TRANSLATE = "translate"
 MODE_CHOICES = (MODE_SKIP, MODE_MIRROR, MODE_MIRROR_STRUCTURAL, MODE_TRANSLATE)
+BUILD_OFF = "off"
+BUILD_CONVERTED = "converted"
+BUILD_ORIGINAL = "original"
+BUILD_BOTH = "both"
+BUILD_CHOICES = (BUILD_OFF, BUILD_CONVERTED, BUILD_ORIGINAL, BUILD_BOTH)
 
 # Meshes placed further than this from the vehicle origin are treated as
 # deliberately hidden (mods "remove" unwanted meshes by offsetting them
@@ -160,6 +165,7 @@ class VehicleContext:
     mesh_roles_cache: dict[str, tuple[set[str], set[str], set[str]]] = field(default_factory=dict)
     selected_node_positions_cache: dict[str, dict[str, tuple[float, float, float]]] = field(default_factory=dict)
     part_array_cache: dict[tuple[str, str], str | None] = field(default_factory=dict)
+    variant_hands_cache: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -2329,6 +2335,39 @@ def write_mirrored_preview(
     return target
 
 
+def write_stock_preview(
+    context: VehicleContext,
+    output_vehicle_dir: Path,
+    config_name: str,
+    output_config: str,
+) -> Path | None:
+    """Copy a source preview for a plates-only trim and add the HDC marker."""
+    preview_path = source_preview_path(context.source_zip, context.vehicle_path, config_name)
+    if not preview_path:
+        return None
+    target = output_vehicle_dir / f"{output_config}{Path(preview_path).suffix.lower()}"
+    with zipfile.ZipFile(context.source_zip) as zf:
+        data = zf.read(preview_path)
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as image:
+            branded = composite_hdc_sticker(image)
+            image_format = image.format or Path(preview_path).suffix.lstrip(".").upper()
+            save_kwargs: dict[str, object] = {}
+            if image_format.upper() in {"JPG", "JPEG"}:
+                image_format = "JPEG"
+                save_kwargs = {"quality": 92}
+                if branded.mode in {"RGBA", "P"}:
+                    branded = branded.convert("RGB")
+            out = io.BytesIO()
+            branded.save(out, format=image_format, **save_kwargs)
+            write_bytes_file(target, out.getvalue())
+    except Exception:
+        write_bytes_file(target, data)
+    return target
+
+
 def hand_from_text(text: str) -> str:
     lowered = text.lower()
     rhd_tokens = ("rhd", "right hand drive", "right-hand drive", "right hand-drive", "jdm", "uk")
@@ -2386,6 +2425,7 @@ def load_cached_vehicle_context(source_zip: Path, vehicle_id: str) -> VehicleCon
     context.mesh_roles_cache = {}
     context.selected_node_positions_cache = {}
     context.part_array_cache = {}
+    context.variant_hands_cache = {}
     return context
 
 
@@ -2400,6 +2440,7 @@ def save_vehicle_context_cache(context: VehicleContext) -> Path | None:
                 mesh_roles_cache={},
                 selected_node_positions_cache={},
                 part_array_cache={},
+                variant_hands_cache={},
             ),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2480,6 +2521,120 @@ def save_cached_part_ids(
 def clear_parts_cache(context: VehicleContext) -> None:
     try:
         parts_cache_path(context).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+HAND_DETECTION_CACHE_VERSION = 1
+
+
+def variant_hands_cache_path(context: VehicleContext) -> Path:
+    return context.project_dir / "variant_hands_cache.json"
+
+
+def variant_hand_detection_signature(conversion: dict[str, object]) -> tuple[str, ...]:
+    """Inputs from a conversion that can change stock-hand detection."""
+    return tuple(sorted(selected_steering_refs(conversion)))
+
+
+def variant_hands_cache_key(conversion: dict[str, object]) -> str:
+    payload = json.dumps(variant_hand_detection_signature(conversion), separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def variant_hands_cache_fingerprint(context: VehicleContext) -> str:
+    payload = f"{HAND_DETECTION_CACHE_VERSION}:{context_fingerprint_hash(context.source_zip)}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _normalized_cached_variant_hands(
+    context: VehicleContext,
+    value: object,
+) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(config_name): str(hand)
+        for config_name, hand in value.items()
+        if config_name in context.variants and hand in {HAND_LHD, HAND_RHD, HAND_UNKNOWN}
+    }
+
+
+def load_cached_variant_hands(
+    context: VehicleContext,
+    conversion: dict[str, object],
+) -> dict[str, str] | None:
+    """Load detected stock handedness for this steering-reference selection.
+
+    Results are kept in memory and persisted across sessions. The source/common
+    zip fingerprint and detection version prevent stale model data being reused.
+    """
+    key = variant_hands_cache_key(conversion)
+    memory = _normalized_cached_variant_hands(context, context.variant_hands_cache.get(key))
+    if memory:
+        return dict(memory)
+
+    path = variant_hands_cache_path(context)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("fingerprint") != variant_hands_cache_fingerprint(context):
+        return None
+    detections = data.get("detections")
+    if not isinstance(detections, dict):
+        return None
+    hands = _normalized_cached_variant_hands(context, detections.get(key))
+    if not hands:
+        return None
+    context.variant_hands_cache[key] = hands
+    return dict(hands)
+
+
+def save_cached_variant_hands(
+    context: VehicleContext,
+    conversion: dict[str, object],
+    hands: dict[str, str],
+    max_entries: int = 8,
+) -> None:
+    normalized = _normalized_cached_variant_hands(context, hands)
+    if not normalized:
+        return
+    key = variant_hands_cache_key(conversion)
+    context.variant_hands_cache[key] = dict(normalized)
+    path = variant_hands_cache_path(context)
+    fingerprint = variant_hands_cache_fingerprint(context)
+    detections: dict[str, dict[str, str]] = {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            isinstance(data, dict)
+            and data.get("fingerprint") == fingerprint
+            and isinstance(data.get("detections"), dict)
+        ):
+            detections = {
+                str(saved_key): _normalized_cached_variant_hands(context, saved_hands)
+                for saved_key, saved_hands in data["detections"].items()
+                if isinstance(saved_hands, dict)
+            }
+    except Exception:
+        pass
+    detections.pop(key, None)
+    detections[key] = normalized
+    while len(detections) > max_entries:
+        detections.pop(next(iter(detections)))
+    try:
+        write_text_file(path, json.dumps({"fingerprint": fingerprint, "detections": detections}, indent=1))
+    except Exception:
+        pass
+
+
+def clear_variant_hands_cache(context: VehicleContext) -> None:
+    context.variant_hands_cache = {}
+    try:
+        variant_hands_cache_path(context).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -2856,10 +3011,33 @@ def default_variant_settings(context: VehicleContext) -> dict[str, dict[str, obj
     return {
         name: {
             "selected": False,
+            "build": BUILD_OFF,
             "sourceHandOverride": HAND_AUTO,
+            "frontPlate": plate_generator.PLATE_PART_AUTO,
+            "rearPlate": plate_generator.PLATE_PART_AUTO,
         }
         for name in sorted(context.variants)
     }
+
+
+def variant_build_mode(settings: object) -> str:
+    """Return the output mode for one source trim.
+
+    ``selected`` is retained as a compatibility mirror for pre-XP projects;
+    old saves therefore migrate to Converted/Off without changing behaviour.
+    """
+    if not isinstance(settings, dict):
+        return BUILD_OFF
+    mode = str(settings.get("build") or "").lower()
+    if mode in BUILD_CHOICES:
+        return mode
+    return BUILD_CONVERTED if settings.get("selected") else BUILD_OFF
+
+
+def set_variant_build_mode(settings: dict[str, object], mode: str) -> None:
+    normalized = mode if mode in BUILD_CHOICES else BUILD_OFF
+    settings["build"] = normalized
+    settings["selected"] = normalized != BUILD_OFF
 
 
 def base_conversion_config(context: VehicleContext) -> dict[str, object]:
@@ -2874,7 +3052,7 @@ def base_conversion_config(context: VehicleContext) -> dict[str, object]:
         },
         "variants": default_variant_settings(context),
         "parts": default_part_settings(context),
-        "plate": plate_generator.default_plate_config(),
+        "plate": plate_generator.default_plate_binding(),
         "delta": {
             "manual": False,
             "magnitude": None,
@@ -2910,13 +3088,30 @@ def merge_with_current_inventory(context: VehicleContext, data: dict[str, object
                 merged["variants"][name].update(
                     {
                         key: settings[key]
-                        for key in ("selected", "sourceHandOverride", "plate")
+                        for key in (
+                            "selected",
+                            "build",
+                            "sourceHandOverride",
+                            "plate",
+                            "frontPlate",
+                            "rearPlate",
+                        )
                         if key in settings
                     }
                 )
+                if "build" in settings:
+                    migrated_build = variant_build_mode(settings)
+                elif "selected" in settings:
+                    migrated_build = BUILD_CONVERTED if settings.get("selected") else BUILD_OFF
+                else:
+                    migrated_build = variant_build_mode(merged["variants"][name])
+                set_variant_build_mode(merged["variants"][name], migrated_build)
+                merged["variants"][name]["plate"] = plate_generator.normalized_plate_binding(
+                    merged["variants"][name].get("plate"), variant=True
+                )
 
     if isinstance(data.get("plate"), dict):
-        merged["plate"] = plate_generator.normalized_plate_config(data["plate"])
+        merged["plate"] = plate_generator.normalized_plate_binding(data["plate"])
 
     old_parts = data.get("parts", {})
     if isinstance(old_parts, dict):
@@ -2984,9 +3179,26 @@ def import_matching_conversion(
                 out["variants"][name].update(
                     {
                         key: settings[key]
-                        for key in ("selected", "sourceHandOverride", "plate")
+                        for key in (
+                            "selected",
+                            "build",
+                            "sourceHandOverride",
+                            "plate",
+                            "frontPlate",
+                            "rearPlate",
+                        )
                         if key in settings
                     }
+                )
+                if "build" in settings:
+                    imported_build = variant_build_mode(settings)
+                elif "selected" in settings:
+                    imported_build = BUILD_CONVERTED if settings.get("selected") else BUILD_OFF
+                else:
+                    imported_build = variant_build_mode(out["variants"][name])
+                set_variant_build_mode(out["variants"][name], imported_build)
+                out["variants"][name]["plate"] = plate_generator.normalized_plate_binding(
+                    out["variants"][name].get("plate"), variant=True
                 )
                 counts["variantImported"] += 1
             else:
@@ -3025,12 +3237,23 @@ def import_matching_conversion(
                 counts["partSkipped"] += 1
         keep_single_steering_ref(context, out["parts"])
     if isinstance(imported.get("plate"), dict):
-        out["plate"] = plate_generator.normalized_plate_config(imported["plate"])
+        out["plate"] = plate_generator.normalized_plate_binding(imported["plate"])
     return out, counts
 
 
 def save_conversion(context: VehicleContext, conversion: dict[str, object]) -> Path:
     context.project_dir.mkdir(parents=True, exist_ok=True)
+    conversion["toolVersion"] = TOOL_VERSION
+    conversion["plate"] = plate_generator.normalized_plate_binding(conversion.get("plate"))
+    variants = conversion.get("variants", {})
+    if isinstance(variants, dict):
+        for settings in variants.values():
+            if not isinstance(settings, dict):
+                continue
+            set_variant_build_mode(settings, variant_build_mode(settings))
+            settings["plate"] = plate_generator.normalized_plate_binding(settings.get("plate"), variant=True)
+            settings["frontPlate"] = plate_generator.normalized_plate_part_choice(settings.get("frontPlate"))
+            settings["rearPlate"] = plate_generator.normalized_plate_part_choice(settings.get("rearPlate"))
     delta = conversion.setdefault("delta", {})
     if isinstance(delta, dict):
         delta["steeringRefs"] = selected_steering_refs(conversion)
@@ -3566,6 +3789,38 @@ def detect_hand_for_variant(
     return hand_from_steering_positions(context, steering_ids, used_meshes)
 
 
+def detect_hands_for_variants(
+    context: VehicleContext,
+    conversion: dict[str, object],
+) -> dict[str, str]:
+    """Return all stock-hand detections, filling only cache misses."""
+    hands = load_cached_variant_hands(context, conversion) or {}
+    changed = False
+    for config_name in sorted(context.variants):
+        if config_name in hands:
+            continue
+        hands[config_name] = detect_hand_for_variant(context, conversion, config_name)
+        changed = True
+    if changed:
+        save_cached_variant_hands(context, conversion, hands)
+    return hands
+
+
+def cached_hand_for_variant(
+    context: VehicleContext,
+    conversion: dict[str, object],
+    config_name: str,
+) -> str:
+    hands = load_cached_variant_hands(context, conversion) or {}
+    hand = hands.get(config_name)
+    if hand is not None:
+        return hand
+    hand = detect_hand_for_variant(context, conversion, config_name)
+    hands[config_name] = hand
+    save_cached_variant_hands(context, conversion, hands)
+    return hand
+
+
 def effective_source_hand(
     context: VehicleContext,
     conversion: dict[str, object],
@@ -3575,7 +3830,7 @@ def effective_source_hand(
     override = str(variant_settings.get("sourceHandOverride", HAND_AUTO))
     if override in {HAND_LHD, HAND_RHD, HAND_UNKNOWN}:
         return override
-    return detect_hand_for_variant(context, conversion, config_name)
+    return cached_hand_for_variant(context, conversion, config_name)
 
 
 def target_hand_for(
@@ -4402,6 +4657,10 @@ def variant_output_name(config_name: str, target_hand: str) -> str:
     return f"{config_name}{suffix}"
 
 
+def original_plate_output_name(config_name: str) -> str:
+    return config_name if config_name.lower().endswith("_plates") else f"{config_name}_plates"
+
+
 def append_hand_label(name: object, target_hand: str) -> str:
     text = str(name or "").strip()
     if not text:
@@ -4605,11 +4864,50 @@ def write_generated_jbeam_and_configs(
     return generated_configs
 
 
+def write_original_plate_configs(
+    context: VehicleContext,
+    output_vehicle_dir: Path,
+    conversion: dict[str, object],
+    config_names: Iterable[str],
+) -> list[str]:
+    """Copy stock trims as new configs for the plates-only build path."""
+    generated: list[str] = []
+    output_vehicle_dir.mkdir(parents=True, exist_ok=True)
+    for config_name in sorted(set(config_names)):
+        variant = context.variants[config_name]
+        pc = load_pc(context.source_zip, variant.pc_path)
+        output_config = original_plate_output_name(config_name)
+        write_text_file(output_vehicle_dir / f"{output_config}.pc", json.dumps(pc, indent=2), encoding="utf-8")
+
+        info: dict[str, object] = {}
+        if variant.info_path:
+            try:
+                info = load_info(context.source_zip, variant.info_path)
+            except Exception:
+                info = {}
+        existing_name = str(info.get("Configuration") or info.get("Name") or variant.display_name)
+        plates_name = existing_name if existing_name.lower().endswith(" plates") else f"{existing_name} Plates"
+        info["Configuration"] = plates_name
+        info["Name"] = plates_name
+        description = str(info.get("Description") or info.get("description") or "").strip()
+        info["Description"] = f"{description} - BeamHDC plate configuration" if description else "BeamHDC plate configuration"
+        info["Config Type"] = "Custom"
+        info["Source"] = conversion_source_name(context)
+        write_text_file(output_vehicle_dir / f"info_{output_config}.json", json.dumps(info, indent=2), encoding="utf-8")
+        write_stock_preview(context, output_vehicle_dir, config_name, output_config)
+        generated.append(output_config)
+    return generated
+
+
 def variant_target_hand(
     context: VehicleContext,
     conversion: dict[str, object],
     config_name: str,
 ) -> str | None:
+    variants = conversion.get("variants", {})
+    settings = variants.get(config_name) if isinstance(variants, dict) else None
+    if variant_build_mode(settings) not in {BUILD_CONVERTED, BUILD_BOTH}:
+        return None
     return target_hand_for(effective_source_hand(context, conversion, config_name), ACTION_OPPOSITE)
 
 
@@ -4617,11 +4915,8 @@ def output_config_sources(
     context: VehicleContext,
     conversion: dict[str, object],
 ) -> dict[str, str]:
-    variant_targets, _skipped = selected_variant_targets(context, conversion)
-    return {
-        variant_output_name(config_name, target_hand): config_name
-        for config_name, target_hand in sorted(variant_targets.items())
-    }
+    plans, _skipped = selected_output_plans(context, conversion)
+    return {str(plan["output"]): str(plan["source"]) for plan in plans}
 
 
 def load_beamng_json_file(path: Path) -> dict[str, object]:
@@ -4829,7 +5124,9 @@ def output_vehicle_preview_payload(
         "vehicle_id": context.vehicle_id,
         "config_name": config_name,
         "output_name": output_name,
-        "target_hand": variant_target_hand(context, conversion, config_name),
+        "target_hand": None
+        if output_name == original_plate_output_name(config_name)
+        else variant_target_hand(context, conversion, config_name),
         "output_root": str(output_root),
         "dae_files": dae_entries,
         "instances": instances,
@@ -4867,7 +5164,24 @@ def full_vehicle_preview_payload(
         selected_configs=(config_name,),
     )
     structural = structural_mirror_sources(context, conversion, object_modes)
-    selected = selected_parts_for_config(context, config_name)
+    preview_pc, generated_plate_parts = plate_generator.preview_pc_with_plate_parts(
+        context,
+        conversion,
+        config_name,
+    )
+    preview_part_index = dict(context.part_body_index)
+    preview_part_index.update(
+        {
+            part_id: (body, "bhdc_preview_licenseplates.jbeam")
+            for part_id, body in generated_plate_parts.items()
+        }
+    )
+    selected = resolve_selected_parts(
+        preview_pc,
+        context.jbeam_texts,
+        vehicle_id=context.vehicle_id,
+        part_body_index=preview_part_index,
+    )
     part_slot_options = selected.get("part_slot_options", {})
     selected_nodes = selected_node_positions_for_config(context, config_name)
     node_positions = dict(context.node_positions)
@@ -4902,11 +5216,17 @@ def full_vehicle_preview_payload(
             return multiply_matrix(translation_matrix((delta, 0.0, 0.0)), world)
         return multiply_matrix(mirror, world)
 
+    def preview_part_array(part_id: str, array_key: str) -> str | None:
+        body = generated_plate_parts.get(part_id)
+        if body is not None:
+            return transform_helpers.extract_named_array(body, array_key)
+        return part_named_array_for_context(context, part_id, array_key)
+
     for part_id in sorted(str(part) for part in selected.get("parts", set())):
         raw_options = part_slot_options.get(part_id, ()) if isinstance(part_slot_options, dict) else ()
         opts = tuple(str(item) for item in raw_options if item) if isinstance(raw_options, (list, tuple)) else ()
         for kind, array_key in (("flex", "flexbodies"), ("prop", "props")):
-            array_text = part_named_array_for_context(context, part_id, array_key)
+            array_text = preview_part_array(part_id, array_key)
             if not array_text:
                 continue
             for row in iter_active_top_level_rows(array_text):
@@ -5037,7 +5357,7 @@ def make_zip(src: Path, target: Path) -> None:
 
 
 def package_name_for_context(context: VehicleContext) -> str:
-    return f"{context.source_zip.stem}_handdrive_visual_conversion.zip"
+    return f"{context.source_zip.stem}_XP_conversion.zip"
 
 
 def write_mod_info(root: Path, context: VehicleContext) -> None:
@@ -5045,11 +5365,11 @@ def write_mod_info(root: Path, context: VehicleContext) -> None:
     mod_info.mkdir(parents=True, exist_ok=True)
     source_name = conversion_source_name(context)
     info = {
-        "name": f"{context.vehicle_id} Visual Hand-Drive Conversion",
+        "name": f"{context.vehicle_id} BeamHDC XP Conversion",
         "version": "0.1.0",
         "authors": source_name,
         "description": (
-            f"Generated visual LHD/RHD conversion overlay for {context.vehicle_id}. "
+            f"Generated BeamHDC handedness and/or plate configuration overlay for {context.vehicle_id}. "
             f"Depends on {context.source_zip.name}."
         ),
         "source": source_name,
@@ -5069,7 +5389,7 @@ def selected_variant_targets(
     for config_name, settings in variants.items():
         if config_name not in context.variants or not isinstance(settings, dict):
             continue
-        if not settings.get("selected"):
+        if variant_build_mode(settings) not in {BUILD_CONVERTED, BUILD_BOTH}:
             continue
         source_hand = effective_source_hand(context, conversion, config_name)
         target = target_hand_for(source_hand, ACTION_OPPOSITE)
@@ -5080,6 +5400,38 @@ def selected_variant_targets(
     return targets, skipped
 
 
+def selected_output_plans(
+    context: VehicleContext,
+    conversion: dict[str, object],
+) -> tuple[list[dict[str, object]], dict[str, str]]:
+    """Expand each trim row into zero, one, or two generated configs."""
+    targets, skipped = selected_variant_targets(context, conversion)
+    plans: list[dict[str, object]] = []
+    variants = conversion.get("variants", {})
+    if not isinstance(variants, dict):
+        return plans, skipped
+    for config_name, settings in sorted(variants.items()):
+        if config_name not in context.variants or not isinstance(settings, dict):
+            continue
+        mode = variant_build_mode(settings)
+        if mode in {BUILD_CONVERTED, BUILD_BOTH} and config_name in targets:
+            target = targets[config_name]
+            plans.append({
+                "source": config_name,
+                "kind": BUILD_CONVERTED,
+                "targetHand": target,
+                "output": variant_output_name(config_name, target),
+            })
+        if mode in {BUILD_ORIGINAL, BUILD_BOTH}:
+            plans.append({
+                "source": config_name,
+                "kind": BUILD_ORIGINAL,
+                "targetHand": None,
+                "output": original_plate_output_name(config_name),
+            })
+    return plans, skipped
+
+
 def build_batch(
     context: VehicleContext,
     conversion: dict[str, object],
@@ -5088,63 +5440,83 @@ def build_batch(
     install: bool = False,
     mods_folder: Path | None = None,
 ) -> BuildResult:
-    object_modes = active_part_modes(conversion)
+    output_plans, skipped = selected_output_plans(context, conversion)
+    if not output_plans:
+        raise RuntimeError("No trim outputs are selected")
     variant_targets, skipped = selected_variant_targets(context, conversion)
-    if not variant_targets:
-        raise RuntimeError("No selected variants have a buildable target hand")
-    if not object_modes:
-        raise RuntimeError("No parts are set to Mirror Aesthetic, Mirror Structural, or Translate")
+    original_configs = [
+        str(plan["source"])
+        for plan in output_plans
+        if plan["kind"] == BUILD_ORIGINAL
+    ]
+    no_op_originals = [
+        config_name
+        for config_name in original_configs
+        if not plate_generator.variant_has_plate_changes(conversion, config_name, context)
+    ]
+    if no_op_originals:
+        raise RuntimeError(
+            "Plates Only output has no plate changes for: "
+            + ", ".join(no_op_originals[:8])
+            + ("..." if len(no_op_originals) > 8 else "")
+            + ". Choose a plate design, a different physical plate, or None for at least one side."
+        )
 
-    selected_configs = sorted(variant_targets)
-    flexbody_meshes, prop_meshes, _all_meshes = selected_mesh_roles(context, selected_configs)
-    if _all_meshes:
-        object_modes = {
-            mesh: mode
-            for mesh, mode in object_modes.items()
-            if mesh in _all_meshes
+    object_modes: dict[str, str] = {}
+    structural_sources: dict[str, str] = {}
+    node_mirror_map: dict[str, str] = {}
+    translated_prop_meshes: set[str] = set()
+    mirrored_prop_meshes: set[str] = set()
+    structural_prop_meshes: set[str] = set()
+    translated_flexbody_meshes: set[str] = set()
+    translate_magnitudes: dict[str, float] = {}
+    if variant_targets:
+        object_modes = active_part_modes(conversion)
+        if not object_modes:
+            raise RuntimeError("Converted outputs require at least one Mirror Aesthetic, Mirror Structural, or Translate part")
+        selected_configs = sorted(variant_targets)
+        flexbody_meshes, prop_meshes, all_meshes = selected_mesh_roles(context, selected_configs)
+        if all_meshes:
+            object_modes = {mesh: mode for mesh, mode in object_modes.items() if mesh in all_meshes}
+        if not object_modes:
+            raise RuntimeError(
+                "No Mirror Aesthetic, Mirror Structural, or Translate parts are used by the converted trims"
+            )
+        object_modes = fallback_structural_part_modes(
+            context,
+            conversion,
+            object_modes,
+            selected_configs=selected_configs,
+        )
+        structural_sources = structural_mirror_sources(context, conversion, object_modes)
+        node_mirror_map = build_node_mirror_map(context.node_positions)
+        translated_prop_meshes = {
+            mesh for mesh, mode in object_modes.items() if mode == MODE_TRANSLATE and mesh in prop_meshes
         }
-    if not object_modes:
-        raise RuntimeError(
-            "No Mirror Aesthetic, Mirror Structural, or Translate parts are used by the selected variants"
+        mirrored_prop_meshes = {
+            mesh for mesh, mode in object_modes.items() if mode == MODE_MIRROR and mesh in prop_meshes
+        }
+        structural_prop_meshes = {
+            mesh for mesh, mode in object_modes.items() if mode == MODE_MIRROR_STRUCTURAL and mesh in prop_meshes
+        }
+        translated_flexbody_meshes = {
+            mesh
+            for mesh, mode in object_modes.items()
+            if mode == MODE_TRANSLATE and mesh in flexbody_meshes and mesh not in translated_prop_meshes
+        }
+        translate_magnitudes = part_translate_magnitudes(context, conversion, object_modes)
+        zero_translate = sorted(
+            object_id
+            for object_id, mode in object_modes.items()
+            if mode == MODE_TRANSLATE and translate_magnitudes.get(object_id, 0.0) <= 0
         )
-    object_modes = fallback_structural_part_modes(
-        context,
-        conversion,
-        object_modes,
-        selected_configs=selected_configs,
-    )
-    structural_sources = structural_mirror_sources(context, conversion, object_modes)
-    node_mirror_map = build_node_mirror_map(context.node_positions)
-    translated_prop_meshes = {
-        mesh for mesh, mode in object_modes.items() if mode == MODE_TRANSLATE and mesh in prop_meshes
-    }
-    mirrored_prop_meshes = {
-        mesh for mesh, mode in object_modes.items() if mode == MODE_MIRROR and mesh in prop_meshes
-    }
-    structural_prop_meshes = {
-        mesh
-        for mesh, mode in object_modes.items()
-        if mode == MODE_MIRROR_STRUCTURAL and mesh in prop_meshes
-    }
-    translated_flexbody_meshes = {
-        mesh
-        for mesh, mode in object_modes.items()
-        if mode == MODE_TRANSLATE and mesh in flexbody_meshes and mesh not in translated_prop_meshes
-    }
-
-    translate_magnitudes = part_translate_magnitudes(context, conversion, object_modes)
-    zero_translate = sorted(
-        object_id
-        for object_id, mode in object_modes.items()
-        if mode == MODE_TRANSLATE and translate_magnitudes.get(object_id, 0.0) <= 0
-    )
-    if zero_translate:
-        raise RuntimeError(
-            "Delta X magnitude is zero for translated part(s): "
-            + ", ".join(zero_translate[:8])
-            + ("..." if len(zero_translate) > 8 else "")
-            + ". Select a steering reference, enter a global manual delta, or set per-part offsets."
-        )
+        if zero_translate:
+            raise RuntimeError(
+                "Delta X magnitude is zero for translated part(s): "
+                + ", ".join(zero_translate[:8])
+                + ("..." if len(zero_translate) > 8 else "")
+                + ". Select a steering reference, enter a global manual delta, or set per-part offsets."
+            )
 
     output_root = context.project_dir / "unpacked_output"
     build_dir = context.project_dir / "build"
@@ -5153,34 +5525,44 @@ def build_batch(
     output_vehicle_dir = output_root / context.vehicle_path
 
     baked_shared_specs: list[BakedMeshSpec] = []
-    generated_configs = write_generated_jbeam_and_configs(
+    generated_configs: list[str] = []
+    generated_daes: list[Path] = []
+    if variant_targets:
+        generated_configs.extend(write_generated_jbeam_and_configs(
+            context,
+            output_vehicle_dir,
+            conversion,
+            object_modes,
+            structural_sources,
+            node_mirror_map,
+            variant_targets,
+            translate_magnitudes,
+            translated_prop_meshes,
+            translated_flexbody_meshes,
+            mirrored_prop_meshes,
+            structural_prop_meshes,
+            baked_shared_specs,
+        ))
+        generated_daes = generate_daes(
+            context,
+            output_root,
+            output_vehicle_dir,
+            object_modes,
+            structural_sources,
+            set(variant_targets.values()),
+            translate_magnitudes,
+            translated_prop_meshes,
+            translated_flexbody_meshes,
+            context.jbeam_positioned_flexbodies,
+            baked_shared_specs,
+        )
+    generated_configs.extend(write_original_plate_configs(
         context,
         output_vehicle_dir,
         conversion,
-        object_modes,
-        structural_sources,
-        node_mirror_map,
-        variant_targets,
-        translate_magnitudes,
-        translated_prop_meshes,
-        translated_flexbody_meshes,
-        mirrored_prop_meshes,
-        structural_prop_meshes,
-        baked_shared_specs,
-    )
-    generated_daes = generate_daes(
-        context,
-        output_root,
-        output_vehicle_dir,
-        object_modes,
-        structural_sources,
-        set(variant_targets.values()),
-        translate_magnitudes,
-        translated_prop_meshes,
-        translated_flexbody_meshes,
-        context.jbeam_positioned_flexbodies,
-        baked_shared_specs,
-    )
+        original_configs,
+    ))
+    generated_configs.sort()
     write_mod_info(output_root, context)
     # Licence plates are generated as a separate pass over the written output
     # so plate logic stays fully decoupled from the handedness transforms.
@@ -5190,7 +5572,7 @@ def build_batch(
             conversion,
             output_root,
             output_vehicle_dir,
-            variant_targets,
+            output_plans,
         )
     except plate_generator.PlateError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -5203,6 +5585,7 @@ def build_batch(
     embedded["builtAt"] = datetime.now().isoformat(timespec="seconds")
     embedded["build"] = {
         "generatedConfigs": generated_configs,
+        "outputs": output_plans,
         "targetHands": variant_targets,
         "deltaMagnitude": delta_magnitude(context, conversion),
         "translateMagnitudes": translate_magnitudes,
