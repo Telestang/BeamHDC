@@ -80,10 +80,10 @@ _EU_BLUE = "#003399"
 _ATLAS_WIDTH = 1024
 _ATLAS_PAD = 6
 _CAP_TARGET = 100  # target capital letter height in atlas pixels
-_ASSET_VERSION = 7  # bump to invalidate hashed asset folders
+_ASSET_VERSION = 8  # bump to invalidate hashed asset folders
 EMBOSS_MAX_UI = 2.0  # upper bound of the emboss slider in the UI
 _EMBOSS_BLUR_RADIUS = 1.2
-_EMBOSS_NORMAL_HEIGHT = 6.0
+_EMBOSS_NORMAL_HEIGHT = 10.0
 
 _LETTERS = string.ascii_uppercase
 _DIGITS = string.digits
@@ -842,23 +842,14 @@ def _border_geometry(cfg: dict[str, object], size: tuple[int, int]) -> tuple[tup
     bottom = size[1] - 1 - inset
     if left >= right or top >= bottom:
         return None
-    radius = max(0, _corner_radius(cfg, size) - offset)
-    radius = min(radius, (right - left) / 2, (bottom - top) / 2)
+    # The radius only shapes the border line; the plate texture corners stay
+    # square because the vanilla plate meshes already round the corners.
+    radius = min(_corner_radius(cfg, size), (right - left) / 2, (bottom - top) / 2)
     return (left, top, right, bottom), thickness, radius
 
 
-def _rounded_plate_mask(cfg: dict[str, object], size: tuple[int, int]):
-    from PIL import Image, ImageDraw
-
-    radius = _corner_radius(cfg, size)
-    mask = Image.new("L", size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=radius, fill=255)
-    return mask
-
-
 def _border_alpha(cfg: dict[str, object], size: tuple[int, int]):
-    from PIL import Image, ImageChops, ImageDraw
+    from PIL import Image, ImageDraw
 
     geometry = _border_geometry(cfg, size)
     if geometry is None:
@@ -872,7 +863,7 @@ def _border_alpha(cfg: dict[str, object], size: tuple[int, int]):
         outline=255,
         width=thickness,
     )
-    return ImageChops.multiply(alpha, _rounded_plate_mask(cfg, size))
+    return alpha
 
 
 def _decorate_plate_background(cfg: dict[str, object], plate):
@@ -889,7 +880,7 @@ def _decorate_plate_background(cfg: dict[str, object], plate):
             outline=str(_border_cfg(cfg).get("color") or "#101010"),
             width=thickness,
         )
-    plate.putalpha(_rounded_plate_mask(cfg, size))
+    plate.putalpha(255)
     return plate
 
 
