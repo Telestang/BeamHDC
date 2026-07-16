@@ -166,13 +166,14 @@ Three plate families are supported: `EU` (wide), and `US` and `JP` (both 2:1). E
 
 - **Font** — plate fonts are not bundled, because most plate-style fonts are not licensed for redistribution. The default uses a plain system font; for authentic lettering, drop `.ttf`/`.otf` files into the BeamXP fonts folder (`Folder` opens it). `Links...` lists plate-style fonts advertised as free for personal use — UK, German/EU DIN and FE-Schrift, Dutch, and more. Combined with the EU template's colours and bands, the right font can reproduce pretty much any country's plate.
 - **Registration pattern** — `@` = letter, `#` = digit, `~` = letter or digit, `.` = centre dot. Exported trims get a generated registration from the pattern; on unexported stock vehicles BeamNG keeps supplying its own text.
+- **Background images** — optional separate front and rear uploads, for any family. Images scale to fill the plate and centre-crop the overflowing dimension, overriding the background colours; the rear image falls back to the front one. Like a distinct rear colour, a distinct rear image needs a converted or Plates Only trim.
 - **Emboss strength** and an optional **border** (colour, offset, thickness, corner radius).
 - A **live preview** with a front/rear toggle and a `Regenerate` button for the sample registration.
 
 Family-specific options:
 
 - `EU`: front and rear background colours (the rear colour applies to exported trims; stock vehicles use the front colour on both sides), font colour, character spacing, and a side band — the EU band with a country code, or a fully custom band with its own colour, code text, emblem, or full band image.
-- `US`: background colour or a full background image (the image overrides the colour), font colour, text scale, horizontal/vertical text offsets, and character spacing.
+- `US`: background colour, font colour, text scale, horizontal/vertical text offsets, and character spacing.
 - `JP`: plate style (Private white, Kei yellow, Commercial green, Kei commercial black), region, classification, and kana; the registration pattern fills the main number (e.g. `##-##`).
 
 ### Plate library

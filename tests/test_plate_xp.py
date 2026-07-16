@@ -281,5 +281,71 @@ class PlateXpTests(unittest.TestCase):
         self.assertEqual(cloned["flexbodies"][1][0], "licenseplate-52-11-r0_5")
 
 
+class BackgroundImageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def _image(self, name: str, size: tuple[int, int], color: tuple[int, int, int]) -> str:
+        from PIL import Image
+
+        path = self.root / name
+        Image.new("RGB", size, color).save(path)
+        return str(path)
+
+    def test_legacy_us_bg_image_migrates_to_front_background(self) -> None:
+        cfg = plate_generator.normalized_plate_config({"size": "US", "us": {"bgImage": "C:/old.png"}})
+        self.assertEqual(cfg["background"]["frontImage"], "C:/old.png")
+        self.assertEqual(cfg["us"]["bgImage"], "")
+
+    def test_rear_background_falls_back_to_front_image(self) -> None:
+        front = self._image("front.png", (64, 32), (200, 30, 30))
+        cfg = plate_generator.normalized_plate_config({"background": {"frontImage": front}})
+        rear = plate_generator._user_background(cfg, (100, 50), rear=True)
+        self.assertIsNotNone(rear)
+        self.assertEqual(rear.size, (100, 50))
+        self.assertFalse(plate_generator._rear_texture_differs(cfg))
+
+    def test_distinct_rear_image_requires_rear_formats(self) -> None:
+        front = self._image("front.png", (64, 32), (200, 30, 30))
+        rear = self._image("rear.png", (64, 32), (30, 30, 200))
+        cfg = plate_generator.normalized_plate_config({"background": {"frontImage": front, "rearImage": rear}})
+        self.assertTrue(plate_generator._rear_texture_differs(cfg))
+        # a rear image alone also forces rear formats (front stays a colour)
+        cfg = plate_generator.normalized_plate_config({"background": {"rearImage": rear}})
+        self.assertTrue(plate_generator._rear_texture_differs(cfg))
+
+    def test_background_image_scales_to_cover_and_centre_crops(self) -> None:
+        from PIL import Image
+
+        # 200x100 source: left half red, right half blue. Fitted onto a
+        # square canvas the width overflows, so the crop must keep the
+        # horizontal middle - both colours still present at the seam.
+        path = self.root / "wide.png"
+        image = Image.new("RGB", (200, 100), (200, 30, 30))
+        image.paste((30, 30, 200), (100, 0, 200, 100))
+        image.save(path)
+        cfg = plate_generator.normalized_plate_config({"background": {"frontImage": str(path)}})
+        out = plate_generator._user_background(cfg, (100, 100))
+        self.assertEqual(out.size, (100, 100))
+        left = out.getpixel((10, 50))
+        right = out.getpixel((90, 50))
+        self.assertGreater(left[0], left[2], "left of centred crop should stay red")
+        self.assertGreater(right[2], right[0], "right of centred crop should stay blue")
+
+    def test_background_image_renders_for_every_family(self) -> None:
+        front = self._image("front.png", (300, 80), (10, 180, 60))
+        for family in plate_generator.PLATE_SIZES:
+            cfg = plate_generator.normalized_plate_config({
+                "size": family,
+                "background": {"frontImage": front},
+                "jp": {"region": "TOKYO", "classification": "300", "kana": "A"},
+            })
+            preview = plate_generator.render_plate_preview(cfg, "AB12 CDE")
+            centre = preview.getpixel((preview.width // 2, int(preview.height * 0.9)))
+            self.assertGreater(centre[1], 120, f"{family} background should show the image")
+
+
 if __name__ == "__main__":
     unittest.main()

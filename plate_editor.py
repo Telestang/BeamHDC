@@ -323,6 +323,19 @@ class PlateEditorDialog(tk.Toplevel):
         ttk.Label(border_row, text="Corner radius").grid(row=0, column=7, sticky="w", padx=(10, 0))
         self._spin(border_row, "border", "cornerRadius", 0, 120, 1, integer=True).grid(row=0, column=8, sticky="w", padx=(4, 0))
 
+        ttk.Label(self.controls_frame, text="Front bg image").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        self._image_picker(self.controls_frame, "background", "frontImage", "Choose front plate background image").grid(
+            row=5, column=1, sticky="ew", padx=(8, 0), pady=(6, 0)
+        )
+        ttk.Label(self.controls_frame, text="Rear bg image").grid(row=6, column=0, sticky="w", pady=(4, 0))
+        self._image_picker(self.controls_frame, "background", "rearImage", "Choose rear plate background image").grid(
+            row=6, column=1, sticky="ew", padx=(8, 0), pady=(4, 0)
+        )
+        ttk.Label(
+            self.controls_frame,
+            text="Images scale to fill and centre-crop; they override the background colours. Rear falls back to the front image.",
+        ).grid(row=7, column=1, sticky="w", padx=(8, 0))
+
         self.size_frames: dict[str, ttk.Frame] = {}
         holder = ttk.LabelFrame(body, text="Plate configuration", padding=8)
         holder.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -542,21 +555,16 @@ class PlateEditorDialog(tk.Toplevel):
 
         ttk.Label(frame, text="Background colour").grid(row=0, column=0, sticky="w")
         self._color_button(frame, "us", "bgColor").grid(row=0, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(frame, text="Background image").grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self._image_picker(frame, "us", "bgImage", "Choose plate background image").grid(
-            row=1, column=1, sticky="ew", padx=(8, 0), pady=(4, 0)
-        )
-        ttk.Label(frame, text="(image overrides the colour)").grid(row=2, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(frame, text="Font colour").grid(row=3, column=0, sticky="w", pady=(4, 0))
-        self._color_button(frame, "us", "textColor").grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Text scale").grid(row=4, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "us", "textScale", 0.3, 2.5, 0.05).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Horizontal text offset").grid(row=5, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "us", "textX", -0.4, 0.4, 0.01).grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Vertical text offset").grid(row=6, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "us", "textY", -0.4, 0.4, 0.01).grid(row=6, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
-        ttk.Label(frame, text="Character spacing").grid(row=7, column=0, sticky="w", pady=(4, 0))
-        self._spin(frame, "us", "spacing", -20, 60, 1, integer=True).grid(row=7, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Font colour").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self._color_button(frame, "us", "textColor").grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Text scale").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "us", "textScale", 0.3, 2.5, 0.05).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Horizontal text offset").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "us", "textX", -0.4, 0.4, 0.01).grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Vertical text offset").grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "us", "textY", -0.4, 0.4, 0.01).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Character spacing").grid(row=5, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "us", "spacing", -20, 60, 1, integer=True).grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
 
     def _build_jp_frame(self, holder: ttk.LabelFrame) -> None:
         frame = ttk.Frame(holder)

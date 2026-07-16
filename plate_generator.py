@@ -105,6 +105,10 @@ def default_plate_config() -> dict[str, object]:
         "enabled": False,
         "size": PLATE_SIZE_EU,
         "font": {"source": "default", "path": ""},
+        # User-supplied background images (any family). Scaled to cover the
+        # plate canvas with the overflowing dimension centre-cropped; the
+        # rear side falls back to the front image.
+        "background": {"frontImage": "", "rearImage": ""},
         "border": {
             "enabled": False,
             "color": "#101010",
@@ -158,6 +162,12 @@ def normalized_plate_config(raw: object) -> dict[str, object]:
             merged[key] = value
     if merged.get("size") not in PLATE_SIZES:
         merged["size"] = PLATE_SIZE_EU
+    # The US-only bgImage predates the shared front/rear background images;
+    # migrate it so old configs keep rendering identically.
+    legacy_bg = str(merged["us"].get("bgImage") or "")
+    if legacy_bg and not str(merged["background"].get("frontImage") or ""):
+        merged["background"]["frontImage"] = legacy_bg
+    merged["us"]["bgImage"] = ""
     return merged
 
 
@@ -988,23 +998,38 @@ def _render_side_band(cfg_eu: dict[str, object], size: tuple[int, int], font_pat
     return target
 
 
-def _render_eu_background(cfg_eu: dict[str, object], color: str, size: tuple[int, int], font_path: Path):
+def _user_background(cfg: dict[str, object], size: tuple[int, int], *, rear: bool = False):
+    """The user's front/rear background image scaled to cover `size` (aspect
+    preserved, overflowing dimension centre-cropped), or None when unset.
+    The rear side falls back to the front image."""
+    from PIL import ImageOps
+
+    background = cfg.get("background", {})
+    if not isinstance(background, dict):
+        return None
+    front = str(background.get("frontImage") or "")
+    path = (str(background.get("rearImage") or "") or front) if rear else front
+    if not path:
+        return None
+    side = "Rear background" if rear else "Front background"
+    return ImageOps.fit(_open_user_image(path, side), size)
+
+
+def _render_eu_background(cfg_eu: dict[str, object], color: str, size: tuple[int, int], font_path: Path, base=None):
     from PIL import Image
 
-    plate = Image.new("RGBA", size, str(color))
+    plate = base if base is not None else Image.new("RGBA", size, str(color))
     band = _render_side_band(cfg_eu, size, font_path, str(color))
     if band is not None:
         plate.alpha_composite(band, (0, 0))
     return plate
 
 
-def _render_us_background(cfg_us: dict[str, object], size: tuple[int, int]):
-    from PIL import Image, ImageOps
+def _render_us_background(cfg_us: dict[str, object], size: tuple[int, int], base=None):
+    from PIL import Image
 
-    image_path = str(cfg_us.get("bgImage") or "")
-    if image_path:
-        image = _open_user_image(image_path, "Plate background")
-        return ImageOps.fit(image, size)
+    if base is not None:
+        return base
     return Image.new("RGBA", size, str(cfg_us.get("bgColor") or "#ffffff"))
 
 
@@ -1012,7 +1037,7 @@ def _jp_style(cfg_jp: dict[str, object]) -> tuple[str, str]:
     return JP_STYLES.get(str(cfg_jp.get("style") or "private"), JP_STYLES["private"])
 
 
-def _render_jp_background(cfg_jp: dict[str, object], size: tuple[int, int], plate_font_path: Path):
+def _render_jp_background(cfg_jp: dict[str, object], size: tuple[int, int], plate_font_path: Path, base=None):
     """JP plate background with the region/classification/kana fields baked in.
 
     Only the main serial number is live registration text in-game; the other
@@ -1023,7 +1048,7 @@ def _render_jp_background(cfg_jp: dict[str, object], size: tuple[int, int], plat
 
     width, height = size
     bg_color, text_color = _jp_style(cfg_jp)
-    plate = Image.new("RGBA", size, bg_color)
+    plate = base if base is not None else Image.new("RGBA", size, bg_color)
     draw = ImageDraw.Draw(plate)
 
     region = str(cfg_jp.get("region") or "").strip()
@@ -1136,16 +1161,25 @@ def _active_spacing(cfg: dict[str, object]) -> int:
 def _render_background_for(cfg: dict[str, object], fmt: str, font_path: Path, *, rear: bool = False):
     size = _CANVAS[fmt]
     family = str(cfg.get("size"))
+    base = _user_background(cfg, size, rear=rear)
     if family == PLATE_SIZE_EU:
         eu = cfg["eu"]
         color = str((eu.get("rearColor") if rear else eu.get("frontColor")) or "#ffffff")
-        return _decorate_plate_background(cfg, _render_eu_background(eu, color, size, font_path))
+        return _decorate_plate_background(cfg, _render_eu_background(eu, color, size, font_path, base=base))
     if family == PLATE_SIZE_US:
-        return _decorate_plate_background(cfg, _render_us_background(cfg["us"], size))
-    return _decorate_plate_background(cfg, _render_jp_background(cfg["jp"], size, font_path))
+        return _decorate_plate_background(cfg, _render_us_background(cfg["us"], size, base=base))
+    return _decorate_plate_background(cfg, _render_jp_background(cfg["jp"], size, font_path, base=base))
 
 
-def _eu_rear_differs(cfg: dict[str, object]) -> bool:
+def _rear_texture_differs(cfg: dict[str, object]) -> bool:
+    """Whether rear formats need their own background texture."""
+    background = cfg.get("background", {})
+    background = background if isinstance(background, dict) else {}
+    front_image = str(background.get("frontImage") or "")
+    rear_image = str(background.get("rearImage") or "")
+    if front_image or rear_image:
+        # An image overrides the family colours on that side.
+        return (rear_image or front_image) != front_image
     if str(cfg.get("size")) != PLATE_SIZE_EU:
         return False
     eu = cfg["eu"]
@@ -1173,8 +1207,10 @@ def validate_plate_config(cfg: object) -> list[str]:
         font_path = None
     family = str(cfg.get("size"))
     try:
-        if family == PLATE_SIZE_US and str(cfg["us"].get("bgImage") or ""):
-            _open_user_image(str(cfg["us"]["bgImage"]), "Plate background")
+        if str(cfg["background"].get("frontImage") or ""):
+            _open_user_image(str(cfg["background"]["frontImage"]), "Front background")
+        if str(cfg["background"].get("rearImage") or ""):
+            _open_user_image(str(cfg["background"]["rearImage"]), "Rear background")
         if family == PLATE_SIZE_EU and str(cfg["eu"].get("sideBand")) != BAND_NONE and str(cfg["eu"].get("bandFullImage") or ""):
             _open_user_image(str(cfg["eu"]["bandFullImage"]), "Side band image")
         if family == PLATE_SIZE_EU and str(cfg["eu"].get("sideBand")) == BAND_CUSTOM and str(cfg["eu"].get("bandImage") or ""):
@@ -1583,7 +1619,7 @@ def _emit_design(
     design_rel = f"vehicles/common/licenseplates/{prefix}/design_{design_key}"
     design_dir = plates_root / f"design_{design_key}"
     rear_formats = (
-        {_FORMAT_WIDE: _REAR_FORMAT_WIDE, _FORMAT_2_1: _REAR_FORMAT_2_1} if _eu_rear_differs(cfg) else {}
+        {_FORMAT_WIDE: _REAR_FORMAT_WIDE, _FORMAT_2_1: _REAR_FORMAT_2_1} if _rear_texture_differs(cfg) else {}
     )
 
     formats: dict[str, object] = {}
