@@ -2236,7 +2236,7 @@ def source_preview_path(source_zip: Path, vehicle_path: str, config_name: str) -
 # offsets move inward from that corner. The sticker keeps its own aspect ratio.
 XP_STICKER_ANCHOR = "top_left"  # top_left, top_right, bottom_left, bottom_right
 XP_STICKER_ORIGIN_X_FRACTION = 0.02
-XP_STICKER_ORIGIN_Y_FRACTION = 0.18
+XP_STICKER_ORIGIN_Y_FRACTION = 0.72
 # 0.25 tuned against the 512px-wide HDC sticker; the XP sticker is 435px wide
 # at the same height, so 0.25 * 435/512 keeps the on-screen badge size equal.
 XP_STICKER_WIDTH_FRACTION = 0.2124
