@@ -19,6 +19,7 @@ from typing import Iterable
 from xml.etree import ElementTree as ET
 
 import beamng_transform_helpers as transform_helpers
+import plate_generator
 
 
 def default_user_data_dir() -> Path:
@@ -169,6 +170,7 @@ class BuildResult:
     generated_configs: list[str]
     generated_daes: list[Path]
     skipped_variants: dict[str, str]
+    plate_summary: dict[str, object] = field(default_factory=dict)
 
 
 def vehicle_ids_in_zip(source_zip: Path) -> list[str]:
@@ -2872,6 +2874,7 @@ def base_conversion_config(context: VehicleContext) -> dict[str, object]:
         },
         "variants": default_variant_settings(context),
         "parts": default_part_settings(context),
+        "plate": plate_generator.default_plate_config(),
         "delta": {
             "manual": False,
             "magnitude": None,
@@ -2907,10 +2910,13 @@ def merge_with_current_inventory(context: VehicleContext, data: dict[str, object
                 merged["variants"][name].update(
                     {
                         key: settings[key]
-                        for key in ("selected", "sourceHandOverride")
+                        for key in ("selected", "sourceHandOverride", "plate")
                         if key in settings
                     }
                 )
+
+    if isinstance(data.get("plate"), dict):
+        merged["plate"] = plate_generator.normalized_plate_config(data["plate"])
 
     old_parts = data.get("parts", {})
     if isinstance(old_parts, dict):
@@ -2978,7 +2984,7 @@ def import_matching_conversion(
                 out["variants"][name].update(
                     {
                         key: settings[key]
-                        for key in ("selected", "sourceHandOverride")
+                        for key in ("selected", "sourceHandOverride", "plate")
                         if key in settings
                     }
                 )
@@ -3018,6 +3024,8 @@ def import_matching_conversion(
             else:
                 counts["partSkipped"] += 1
         keep_single_steering_ref(context, out["parts"])
+    if isinstance(imported.get("plate"), dict):
+        out["plate"] = plate_generator.normalized_plate_config(imported["plate"])
     return out, counts
 
 
@@ -5174,6 +5182,18 @@ def build_batch(
         baked_shared_specs,
     )
     write_mod_info(output_root, context)
+    # Licence plates are generated as a separate pass over the written output
+    # so plate logic stays fully decoupled from the handedness transforms.
+    try:
+        plate_summary = plate_generator.apply_to_build(
+            context,
+            conversion,
+            output_root,
+            output_vehicle_dir,
+            variant_targets,
+        )
+    except plate_generator.PlateError as exc:
+        raise RuntimeError(str(exc)) from exc
     embedded_dir = output_root / "handedness_conversion"
     embedded_dir.mkdir(parents=True, exist_ok=True)
     delta = conversion.setdefault("delta", {})
@@ -5191,6 +5211,7 @@ def build_batch(
         "structuralPropMeshes": sorted(structural_prop_meshes),
         "bakedSharedMeshCount": len(baked_shared_specs),
         "cameraNodeMirrorCount": len(node_mirror_map),
+        "plates": plate_summary,
     }
     write_text_file(embedded_dir / "conversion.json", json.dumps(embedded, indent=2), encoding="utf-8")
 
@@ -5216,4 +5237,5 @@ def build_batch(
         generated_configs=generated_configs,
         generated_daes=generated_daes,
         skipped_variants=skipped,
+        plate_summary=plate_summary,
     )

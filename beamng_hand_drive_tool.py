@@ -15,7 +15,9 @@ import tkinter as tk
 from tkinter import ttk
 
 import beamng_hand_drive_core as core
+import plate_generator
 from model_preview import ModelPreview
+from plate_editor import PlateEditorDialog
 
 try:  # GPU mesh preview; the box viewer remains the fallback
     import mesh_preview
@@ -280,6 +282,7 @@ class HandDriveToolApp(tk.Tk):
         self.vehicle_load_seq = 0
         self.recommendation_seq = 0
         self.recommendation_modal: tk.Toplevel | None = None
+        self.plate_editor_modal: PlateEditorDialog | None = None
         self.recommendation_tree: ttk.Treeview | None = None
         self.recommendation_rows: dict[str, dict[str, str]] = {}
         self.structural_prompt_after_id: str | None = None
@@ -300,6 +303,7 @@ class HandDriveToolApp(tk.Tk):
         self.auto_delta_var = tk.StringVar(value="")
         self.manual_delta_enabled = tk.BooleanVar(value=False)
         self.manual_delta_var = tk.StringVar(value="")
+        self.plate_enabled_var = tk.BooleanVar(value=False)
         self.mods_folder_var = tk.StringVar(value=str(self.settings.get("modsFolder") or ""))
         self.blender_var = tk.StringVar(value=str(self.settings.get("blenderExecutable") or ""))
         self.preview_output_var = tk.StringVar(value="")
@@ -634,7 +638,7 @@ class HandDriveToolApp(tk.Tk):
         frame.grid(row=1, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
-        columns = ("selected", "config", "display", "detected", "override", "output")
+        columns = ("selected", "config", "display", "detected", "override", "plate", "output")
         self.variant_tree = ttk.Treeview(frame, columns=columns, show="headings", height=8, selectmode="browse")
         headings = {
             "selected": "Use",
@@ -642,6 +646,7 @@ class HandDriveToolApp(tk.Tk):
             "display": "Display Name",
             "detected": "Detected",
             "override": "Override",
+            "plate": "Plates",
             "output": "Output",
         }
         widths = {
@@ -650,6 +655,7 @@ class HandDriveToolApp(tk.Tk):
             "display": 260,
             "detected": 80,
             "override": 92,
+            "plate": 76,
             "output": 160,
         }
         for col in columns:
@@ -779,21 +785,40 @@ class HandDriveToolApp(tk.Tk):
         controls.columnconfigure(1, weight=1)
 
         ttk.Label(controls, text="Auto delta X").grid(row=0, column=0, sticky="w")
-        ttk.Label(controls, textvariable=self.auto_delta_var).grid(row=0, column=1, sticky="w", padx=(8, 0))
+        delta_row = ttk.Frame(controls)
+        delta_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(8, 0))
+        delta_row.columnconfigure(0, weight=1)
+        ttk.Label(delta_row, textvariable=self.auto_delta_var).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(
-            controls,
+            delta_row,
             text="Manual magnitude",
             variable=self.manual_delta_enabled,
             command=self._manual_delta_toggled,
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.manual_delta_entry = ttk.Entry(controls, textvariable=self.manual_delta_var, width=12)
-        self.manual_delta_entry.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
+        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+        self.manual_delta_entry = ttk.Entry(delta_row, textvariable=self.manual_delta_var, width=12)
+        self.manual_delta_entry.grid(row=0, column=2, sticky="e", padx=(6, 0))
         self.manual_delta_entry.bind("<FocusOut>", lambda _event: self._commit_delta_from_ui())
         self.manual_delta_entry.bind("<Return>", lambda _event: self._commit_delta_from_ui())
 
-        ttk.Label(controls, text="Mods folder").grid(row=2, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(controls, textvariable=self.mods_folder_var).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
-        ttk.Button(controls, text="Browse", command=self._browse_mods_folder).grid(row=2, column=2, sticky="e", padx=(6, 0), pady=(10, 0))
+        ttk.Label(controls, text="Licence plates").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.plate_summary_var = tk.StringVar(value="Off")
+        plate_row = ttk.Frame(controls)
+        plate_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(6, 0))
+        plate_row.columnconfigure(1, weight=1)
+        ttk.Checkbutton(
+            plate_row,
+            text="Generate",
+            variable=self.plate_enabled_var,
+            command=self._plate_enabled_toggled,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(plate_row, textvariable=self.plate_summary_var).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Button(plate_row, text="Configure...", command=lambda: self._open_plate_editor(None)).grid(
+            row=0, column=2, sticky="e", padx=(6, 0)
+        )
+
+        ttk.Label(controls, text="Mods folder").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(controls, textvariable=self.mods_folder_var).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
+        ttk.Button(controls, text="Browse", command=self._browse_mods_folder).grid(row=2, column=2, sticky="e", padx=(6, 0), pady=(6, 0))
 
         ttk.Label(controls, text="Blender exe").grid(row=3, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(controls, textvariable=self.blender_var).grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
@@ -1035,6 +1060,7 @@ class HandDriveToolApp(tk.Tk):
         self.mesh_scene_reset_pending = True
         self._set_load_busy(False)
         self._sync_delta_to_ui()
+        self._sync_plate_to_ui()
         self._replace_viewer()
         self._refresh_all(reset_view=True)
         self._schedule_variant_detection()
@@ -1090,6 +1116,20 @@ class HandDriveToolApp(tk.Tk):
         self.manual_delta_var.set("" if magnitude in (None, "") else fmt_float(abs(float(magnitude))))
         self._manual_delta_toggled(refresh=False)
 
+    def _sync_plate_to_ui(self) -> None:
+        cfg = plate_generator.normalized_plate_config(self.conversion.get("plate"))
+        self.plate_enabled_var.set(bool(cfg.get("enabled")))
+        self._refresh_plate_summary()
+
+    def _plate_enabled_toggled(self) -> None:
+        cfg = plate_generator.normalized_plate_config(self.conversion.get("plate"))
+        cfg["enabled"] = bool(self.plate_enabled_var.get())
+        self.conversion["plate"] = cfg
+        self._refresh_plate_summary()
+        self._update_detail()
+        state = "enabled" if cfg["enabled"] else "disabled"
+        self.status_var.set(f"Licence plates {state} ({plate_generator.plate_summary_label(self.conversion)})")
+
     def _refresh_all(self, *, reset_view: bool = False) -> None:
         self._refresh_variants()
         self._schedule_parts_refresh(reset_view=reset_view)
@@ -1129,6 +1169,7 @@ class HandDriveToolApp(tk.Tk):
                     variant.display_name,
                     detected,
                     override,
+                    self._variant_plate_label(settings),
                     output,
                 ),
             )
@@ -1137,7 +1178,20 @@ class HandDriveToolApp(tk.Tk):
         visible_keep = [item for item in keep if self.variant_tree.exists(item)]
         if visible_keep:
             self.variant_tree.selection_set(visible_keep)
+        self._refresh_plate_summary()
         self._refresh_preview_outputs()
+
+    def _variant_plate_label(self, settings: dict[str, object]) -> str:
+        mode = plate_generator.variant_plate_mode(settings)
+        if mode == "custom":
+            return "Custom"
+        if mode == "off":
+            return "Off"
+        return "General"
+
+    def _refresh_plate_summary(self) -> None:
+        if hasattr(self, "plate_summary_var"):
+            self.plate_summary_var.set(plate_generator.plate_summary_label(self.conversion))
 
     def _detected_hand_for_ui(self, config_name: str) -> str:
         return self.variant_detected_hands.get(config_name, "..." if not self.variant_detection_complete else core.HAND_UNKNOWN)
@@ -1733,6 +1787,9 @@ class HandDriveToolApp(tk.Tk):
                 lambda value: self._set_variant_setting(item, "sourceHandOverride", value),
             )
             return "break"
+        if name == "plate":
+            self._open_plate_editor(item)
+            return "break"
         if name is not None:
             # Any other data column (Use / Config / Display / Detected / Output)
             # toggles the trim's selected state.
@@ -1759,6 +1816,21 @@ class HandDriveToolApp(tk.Tk):
             )
         elif name == "output":
             return "break"
+
+    def _open_plate_editor(self, variant_name: str | None) -> None:
+        if self.context is None:
+            self._show_error("No source", "Open a vehicle zip first.")
+            return
+        if self.plate_editor_modal is not None and self.plate_editor_modal.winfo_exists():
+            self.plate_editor_modal.lift()
+            return
+        self.plate_editor_modal = PlateEditorDialog(self, variant_name)
+
+    def _plate_settings_applied(self) -> None:
+        self._sync_plate_to_ui()
+        self._refresh_variants()
+        self._update_detail()
+        self.status_var.set(f"Licence plate settings updated ({plate_generator.plate_summary_label(self.conversion)})")
 
     def _part_option_label(self, object_id: str) -> str:
         display = self._part_display_name(object_id)
@@ -3123,14 +3195,21 @@ class HandDriveToolApp(tk.Tk):
         self._set_busy(False)
         if kind == "build_success":
             result: core.BuildResult = payload
+            plate_note = ""
+            plates = result.plate_summary or {}
+            if plates.get("configsUpdated"):
+                plate_note = f"; plates on {plates['configsUpdated']} config(s)"
+                warnings = plates.get("warnings") or []
+                if warnings:
+                    plate_note += f" ({len(warnings)} plate warning(s), see conversion.json)"
             if result.installed_zip:
                 self.status_var.set(
                     f"Built {result.package_zip} and installed {result.installed_zip}; "
-                    f"{len(result.generated_configs)} config(s)"
+                    f"{len(result.generated_configs)} config(s){plate_note}"
                 )
             else:
                 self.status_var.set(
-                    f"Built {result.package_zip}; {len(result.generated_configs)} config(s)"
+                    f"Built {result.package_zip}; {len(result.generated_configs)} config(s){plate_note}"
                 )
         elif kind == "preview_success":
             self.status_var.set(f"Blender preview launched: {payload}")
