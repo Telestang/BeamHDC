@@ -1,8 +1,10 @@
-# BeamNG Hand Drive Converter (BeamHDC)
+# BeamXP - BeamNG Vehicle eXPort Services
 
-Convert any BeamNG.drive vehicle — vanilla or mod — between left-hand drive and right-hand drive.
+Convert any BeamNG.drive vehicle — vanilla or mod — between left-hand drive and right-hand drive, and generate custom licence plates.
 
-**[Download BeamHDC 0.1.1-alpha](https://github.com/Telestang/BeamHDC/raw/main/release/BeamHDC-0.1.1-alpha-windows.zip)** — extract it anywhere and run the exe.
+**[Download BeamXP 0.1.1-alpha](https://github.com/Telestang/BeamXP/raw/main/release/BeamHDC-0.1.1-alpha-windows.zip)** — extract it anywhere and run the exe.
+
+*BeamXP was previously named BeamHDC (BeamNG Hand Drive Converter).*
 
 ![A converted RHD Sunburst next to its stock LHD counterpart](Screenshots/sunburst_sunset_pair.jpg)
 
@@ -36,7 +38,7 @@ The tool is new. It has been working well in my own testing, but there may be is
 
 ## Quick Start
 
-1. [Download the release zip](https://github.com/Telestang/BeamHDC/raw/main/release/BeamHDC-0.1.1-alpha-windows.zip), extract it, and run `BeamNG Hand Drive Converter.exe` (or run from source — see Requirements).
+1. [Download the release zip](https://github.com/Telestang/BeamXP/raw/main/release/BeamHDC-0.1.1-alpha-windows.zip), extract it, and run the exe (or run from source — see Requirements).
 2. Select a source BeamNG vehicle `.zip`.
 3. If prompted, choose the vehicle model ID.
 4. Select the variants/trims you want to convert.
@@ -57,7 +59,7 @@ Enjoying driving from the other side? Star the repo to help other people find it
 This is the intended way to run the tool. Download the release zip, extract it anywhere, and run:
 
 ```text
-BeamNG Hand Drive Converter.exe
+BeamXP.exe
 ```
 
 No Python install is required. Blender is optional and external; set the path to `blender.exe` inside the tool if you want Blender previews.
@@ -167,10 +169,10 @@ Visual deformation is still driven by the source vehicle's physical deformation.
 Projects are saved under:
 
 ```text
-%LOCALAPPDATA%/BeamHDC/handedness_conversion_projects/<projectName>/
+%LOCALAPPDATA%/BeamXP/handedness_conversion_projects/<projectName>/
 ```
 
-The app settings file is saved beside the projects under `%LOCALAPPDATA%/BeamHDC/`. This keeps user work stable even if the app folder or exe is replaced during an update.
+The app settings file is saved beside the projects under `%LOCALAPPDATA%/BeamXP/`. (Data from BeamHDC-era builds under `%LOCALAPPDATA%/BeamHDC/` is moved there automatically the first time BeamXP runs.) This keeps user work stable even if the app folder or exe is replaced during an update.
 
 Each project contains:
 
@@ -186,19 +188,19 @@ Vehicle builds use the filename `<source>_XP_conversion.zip`. Each trim's `Build
 live in that one archive. The in-app `Config` dropdown still lists that source trim only once; `Original
 layout` changes the previewed transform state without changing its selected plates.
 
-Reusable plate sets are stored separately under `%LOCALAPPDATA%/BeamHDC/plates/`. Renaming a set is
+Reusable plate sets are stored separately under `%LOCALAPPDATA%/BeamXP/plates/`. Renaming a set is
 safe because projects reference its fixed ID. Builds resolve the latest set contents and embed a
 snapshot; if a referenced set is later deleted, the snapshot is used with a build warning. The plate
-library can export selected sets to `BeamHDC_plates.zip` for use in the parts menu on stock vehicles.
+library can export selected sets to `BeamXP_plates.zip` for use in the parts menu on stock vehicles.
 
 Model-local custom designs are labelled `Custom (<vehicle ID>)` and `Custom (<config name>)`. Once a
 trim custom exists, other trims can select it and share the same live definition without adding it to
 the global library. A trim's converted and Plates Only outputs deliberately share one plate selection;
 BeamNG's parts menu can still switch either vehicle to any generated custom or library design in game.
 
-On stock vehicles BeamNG controls the registration text; a BeamHDC pattern such as `@@## @@@` only
+On stock vehicles BeamNG controls the registration text; a BeamXP pattern such as `@@## @@@` only
 generates registrations for exported trim configs. Different front/rear background colours require a
-converted or plates-only trim because BeamHDC must select a cloned rear plate part. Universal designs
+converted or plates-only trim because BeamXP must select a cloned rear plate part. Universal designs
 use the front colour on both sides.
 
 The output mod zip also embeds a copy of the conversion settings at:

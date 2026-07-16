@@ -17,14 +17,14 @@ All vehicle packages use `<source>_XP_conversion.zip`. Plate design, front plate
 part are independent per-trim settings shared by both outputs. This intentionally means LHD and RHD
 outputs from one row use the same plate design. Each side's dropdown lists BeamNG's shared vanilla
 physical plate meshes, independent of the source trim. The trim's current model-specific part is shown
-first with `(default)` and `None` is available per side. BeamHDC uses the closest plate JBeam placement
+first with `(default)` and `None` is available per side. BeamXP uses the closest plate JBeam placement
 defined by the loaded vehicle model, clones it into the trim's active slot when necessary, and swaps in
 the selected shared mesh and format. The ModernGL `Config` dropdown lists the source trim only once;
 `Original layout` removes the hand-drive transforms but deliberately retains its physical plate choices.
 
 ## Reusable sets
 
-Plate sets live at `<BeamHDC data>/plates/<id>.json` with `{id, name, config}`. The slug ID is fixed and
+Plate sets live at `<BeamXP data>/plates/<id>.json` with `{id, name, config}`. The slug ID is fixed and
 the display name can change. A conversion plate binding is `{mode, setId, config}` where `config` is the
 latest resolved snapshot. Modes are `off`, `custom`, and `set`; a trim also supports internal vehicle
 inheritance and conversion-local references such as `Custom (sport_RS_M)`. Those references are live,
@@ -35,11 +35,11 @@ Set-based parts use `bhdc_plateset_<id>` in both vehicle XP builds and the unive
 duplicate designs when both mods are installed.
 
 The library manager supports New, Duplicate, Rename, Delete, Edit, and a checked export to one
-`BeamHDC_plates.zip`. Font atlases always contain A-Z, 0-9, space, hyphen, and period so registrations
+`BeamXP_plates.zip`. Font atlases always contain A-Z, 0-9, space, hyphen, and period so registrations
 chosen by stock vehicles remain visible.
 
 ## Deliberate boundaries
 
-- Registration patterns generate text for BeamHDC-exported configs, not arbitrary stock configs.
+- Registration patterns generate text for BeamXP-exported configs, not arbitrary stock configs.
 - A rear colour different from the front requires an XP vehicle trim and its cloned rear part.
 - Universal plate-set designs use the front colour for both sides.

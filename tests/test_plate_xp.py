@@ -17,14 +17,14 @@ class PlateXpTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.previous_data_dir = os.environ.get("BEAMHDC_DATA_DIR")
-        os.environ["BEAMHDC_DATA_DIR"] = str(self.root / "data")
+        self.previous_data_dir = os.environ.get("BEAMXP_DATA_DIR")
+        os.environ["BEAMXP_DATA_DIR"] = str(self.root / "data")
 
     def tearDown(self) -> None:
         if self.previous_data_dir is None:
-            os.environ.pop("BEAMHDC_DATA_DIR", None)
+            os.environ.pop("BEAMXP_DATA_DIR", None)
         else:
-            os.environ["BEAMHDC_DATA_DIR"] = self.previous_data_dir
+            os.environ["BEAMXP_DATA_DIR"] = self.previous_data_dir
 
     def _context(self, *, with_plate_parts: bool = False) -> core.VehicleContext:
         source = self.root / "test.zip"
@@ -182,12 +182,12 @@ class PlateXpTests(unittest.TestCase):
         self.assertEqual(fallback["eu"]["pattern"], "UPDATED ##")
         self.assertTrue(warnings)
 
-    def test_inline_design_is_named_beamhdc_custom(self) -> None:
+    def test_inline_design_is_named_beamxp_custom(self) -> None:
         output = type("Design", (), {
             "design_json_rel": "vehicles/common/licenseplates/test/licensePlate.json",
         })()
         body = json.loads(plate_generator._design_part_body(output, "EU", custom=True))
-        self.assertEqual(body["information"]["name"], "BeamHDC Custom")
+        self.assertEqual(body["information"]["name"], "BeamXP Custom")
 
     def test_both_expands_to_two_outputs_in_one_xp_package(self) -> None:
         context = self._context()
@@ -252,7 +252,7 @@ class PlateXpTests(unittest.TestCase):
             label="bhdc_licenseplates.jbeam",
         )
         custom_parts = [part for part in generated_parts.values() if isinstance(part, dict)]
-        self.assertEqual(custom_parts[0]["information"]["name"], "BeamHDC Custom")
+        self.assertEqual(custom_parts[0]["information"]["name"], "BeamXP Custom")
 
     def test_plate_part_from_another_model_slot_is_cloned_into_the_trim_slot(self) -> None:
         context = self._context(with_plate_parts=True)

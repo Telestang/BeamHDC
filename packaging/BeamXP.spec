@@ -11,7 +11,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(ROOT / "blender_preview_backend.py"), "."),
-        (str(ROOT / "BeamHDC_icon.ico"), "."),
+        (str(ROOT / "BeamXP_icon.ico"), "."),
         # Composited onto generated config previews; hdc_sticker_path() looks
         # for it in sys._MEIPASS in frozen builds.
         (str(ROOT / "hdc_sticker.png"), "."),
@@ -32,7 +32,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BeamNG Hand Drive Converter",
+    name="BeamXP",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -43,5 +43,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(ROOT / "BeamHDC_icon.ico"),
+    icon=str(ROOT / "BeamXP_icon.ico"),
 )

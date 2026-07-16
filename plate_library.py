@@ -158,7 +158,7 @@ class PlateLibraryDialog(tk.Toplevel):
             messagebox.showinfo("Export plates mod", "Create a plate set first.", parent=self)
             return
         dialog = tk.Toplevel(self)
-        dialog.title("Export BeamHDC plates mod")
+        dialog.title("Export BeamXP plates mod")
         dialog.transient(self)
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)

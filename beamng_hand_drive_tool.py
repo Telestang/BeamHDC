@@ -29,7 +29,7 @@ except Exception:
 THIS_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 BLENDER_PREVIEW_SCRIPT = RESOURCE_DIR / "blender_preview_backend.py"
-APP_ICON_NAME = "BeamHDC_icon.ico"
+APP_ICON_NAME = "BeamXP_icon.ico"
 BLENDER_CANDIDATES = (
     Path(r"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe"),
     Path(r"C:\Program Files\Blender Foundation\Blender 4.3\blender.exe"),
@@ -259,7 +259,7 @@ def app_icon_path() -> Path | None:
 class HandDriveToolApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("BeamHDC Hand-Drive Conversion Tool")
+        self.title("BeamXP - BeamNG Vehicle eXPort Services")
         self._set_app_icon()
         self.geometry("1480x840")
         self.minsize(1160, 700)

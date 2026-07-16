@@ -274,7 +274,7 @@ def main() -> None:
 def write_notes(bpy, payload: dict, placed: int, missing: list) -> None:
     label = str(payload.get("output_name") or payload.get("config_name") or "preview")
     lines = [
-        "BeamNG Hand-Drive Full Vehicle Preview",
+        "BeamXP Full Vehicle Preview",
         "",
         f"Vehicle: {payload.get('vehicle_id')}",
         f"Config: {payload.get('config_name')} -> {payload.get('output_name')} "

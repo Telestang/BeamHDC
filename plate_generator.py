@@ -212,7 +212,7 @@ def normalized_plate_binding(raw: object, *, variant: bool = False) -> dict[str,
 
 
 def _user_data_dir() -> Path:
-    return Path(os.environ.get("BEAMHDC_DATA_DIR") or _default_user_data_dir())
+    return Path(os.environ.get("BEAMXP_DATA_DIR") or os.environ.get("BEAMHDC_DATA_DIR") or default_user_data_dir())
 
 
 def plate_sets_dir() -> Path:
@@ -220,7 +220,7 @@ def plate_sets_dir() -> Path:
 
 
 def default_plate_export_path() -> Path:
-    return _user_data_dir() / "plate_exports" / "BeamHDC_plates.zip"
+    return _user_data_dir() / "plate_exports" / "BeamXP_plates.zip"
 
 
 def _safe_set_id(value: str) -> str:
@@ -407,17 +407,33 @@ def _effective_emboss_strength(cfg: dict[str, object]) -> float:
     return strength * (2.0 + strength)
 
 
-def _default_user_data_dir() -> Path:
+def default_user_data_dir() -> Path:
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        return base / "BeamHDC"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "BeamHDC"
-    return Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "BeamHDC"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+    return _migrated_user_data_dir(base)
+
+
+def _migrated_user_data_dir(base: Path) -> Path:
+    """One-time BeamHDC -> BeamXP rebrand migration: move the legacy data
+    folder to the new name the first time either module resolves the path.
+    File contents are left untouched. If the move fails, keep using the
+    legacy folder rather than silently starting with empty settings."""
+    new_dir = base / "BeamXP"
+    legacy_dir = base / "BeamHDC"
+    if not new_dir.exists() and legacy_dir.is_dir():
+        try:
+            legacy_dir.rename(new_dir)
+        except OSError:
+            return legacy_dir
+    return new_dir
 
 
 def user_fonts_dir() -> Path:
-    return Path(os.environ.get("BEAMHDC_DATA_DIR") or _default_user_data_dir()) / "fonts"
+    return _user_data_dir() / "fonts"
 
 
 def ensure_user_fonts_dir() -> Path:
@@ -495,7 +511,7 @@ def _split_two_line_text(text: str) -> tuple[str, str]:
 
 def _pattern_glyphs(pattern: str) -> set[str]:
     # Designs are also usable on stock vehicles where BeamNG, rather than a
-    # BeamHDC registration pattern, supplies the text. Keep the inexpensive
+    # BeamXP registration pattern, supplies the text. Keep the inexpensive
     # universal glyph coverage in every atlas so punctuation never vanishes.
     glyphs = set(_ALNUM) | {" ", "-", "."}
     for ch in str(pattern or "").strip():
@@ -547,10 +563,10 @@ def resolve_font_path(font_cfg: object) -> Path:
     if source == "library":
         name = library_name or (Path(custom).name if custom else "")
         if not name or Path(name).name != name:
-            raise PlateError("Choose a font from the BeamHDC fonts folder.")
+            raise PlateError("Choose a font from the BeamXP fonts folder.")
         path = ensure_user_fonts_dir() / name
         if not path.is_file():
-            raise PlateError(f"Plate font file not found in BeamHDC fonts folder: {name}")
+            raise PlateError(f"Plate font file not found in BeamXP fonts folder: {name}")
         return path
     if source == "custom":
         path = Path(custom)
@@ -1617,7 +1633,7 @@ def _emit_design(
             formats[rear_fmt] = format_block(rear_fmt, rear=True)
 
     design_json = {
-        "name": "BeamHDC Custom" if set_id is None else f"BeamHDC {cfg.get('size')} plate design",
+        "name": "BeamXP Custom" if set_id is None else f"BeamXP {cfg.get('size')} plate design",
         "version": 2,
         "data": {"format": formats},
     }
@@ -1633,8 +1649,8 @@ def _emit_design(
 def _design_part_body(out: _DesignOutput, size_label: str, *, custom: bool = False) -> str:
     return json.dumps({
         "information": {
-            "authors": "BeamHDC",
-            "name": "BeamHDC Custom" if custom else f"BeamHDC {size_label} Plate Design",
+            "authors": "BeamXP",
+            "name": "BeamXP Custom" if custom else f"BeamXP {size_label} Plate Design",
             "value": 0,
         },
         "slotType": _DESIGN_SLOT,
@@ -1672,7 +1688,7 @@ def _clone_rear_plate_part(
     new_part_id: str,
     clone_sources: dict[str, _RearMeshClone],
 ) -> tuple[str, str, list[str]] | None:
-    """Clone a rear plate part onto the BeamHDC rear plate mesh/format.
+    """Clone a rear plate part onto the BeamXP rear plate mesh/format.
 
     Returns (new_body, rear_format, output_meshes) or None when the part carries no
     recognisable plate mesh.
@@ -1948,7 +1964,7 @@ def _vanilla_plate_mesh_catalog(context) -> list[_VanillaPlateMesh]:
                         _FORMAT_WIDE if mesh.lower().startswith("licenseplate-52-11") else _FORMAT_2_1,
                     )
                     # Rear-colour splitting clones the selected geometry into
-                    # a BeamHDC-owned DAE/material.  Register newly discovered
+                    # a BeamXP-owned DAE/material.  Register newly discovered
                     # common meshes so that path can preserve every curvature,
                     # including shapes this model did not originally use.
                     context.objects.setdefault(mesh, obj)
@@ -2809,7 +2825,7 @@ def _rear_plate_dae(mesh_names: list[str]) -> str:
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">'
-        "<asset><contributor><authoring_tool>BeamHDC</authoring_tool></contributor>"
+        "<asset><contributor><authoring_tool>BeamXP</authoring_tool></contributor>"
         "<unit name=\"meter\" meter=\"1\"/><up_axis>Z_UP</up_axis></asset>"
         f"<library_effects>{''.join(effects)}</library_effects>"
         f"<library_materials>{''.join(materials)}</library_materials>"
@@ -2914,7 +2930,7 @@ def _rear_fallback_design(rear_fmt: str) -> dict[str, object]:
 
 def _rear_mod_script_lua() -> str:
     return (
-        "-- Generated by BeamHDC. Keeps the cloned rear licence plates textured\n"
+        "-- Generated by BeamXP. Keeps the cloned rear licence plates textured\n"
         "-- when a vanilla plate design is selected (see lua/ge/extensions/"
         f"{_REAR_COMPAT_EXTENSION}.lua).\n"
         f'setExtensionUnloadMode("{_REAR_COMPAT_EXTENSION}", "manual")\n'
@@ -3063,7 +3079,7 @@ def _write_rear_design_compat(output_root: Path, prefix: str, rear_formats_used:
         _rear_plates_extension_lua(),
         encoding="utf-8",
     )
-    # modScript path is namespaced per vehicle so BeamHDC mods never shadow
+    # modScript path is namespaced per vehicle so BeamXP mods never shadow
     # each other's scripts; the extension file itself is identical in all of
     # them, so shadowing there is harmless.
     core.write_text_file(
@@ -3258,7 +3274,7 @@ def apply_to_build(
         jbeam_dir.mkdir(parents=True, exist_ok=True)
         body_text = ",\n".join(f'"{part_id}": {body}' if not body.lstrip().startswith(f'"{part_id}"') else body
                                for part_id, body in sorted(part_bodies.items()))
-        contents = "{\n// Generated physical plate parts and designs (BeamHDC).\n" + body_text + "\n}\n"
+        contents = "{\n// Generated physical plate parts and designs (BeamXP).\n" + body_text + "\n}\n"
         core.write_text_file(jbeam_dir / "bhdc_licenseplates.jbeam", contents, encoding="utf-8")
 
     summary["designs"] = len(design_cache)
@@ -3266,12 +3282,12 @@ def apply_to_build(
 
 
 def export_plate_sets(records: list[dict[str, object]], target_zip: Path) -> dict[str, object]:
-    """Write selected reusable designs as one universal BeamHDC plates mod."""
+    """Write selected reusable designs as one universal BeamXP plates mod."""
     import beamng_hand_drive_core as core
 
     if not records:
         raise PlateError("Select at least one plate set to export")
-    output_root = target_zip.parent / "BeamHDC_plates_unpacked"
+    output_root = target_zip.parent / "BeamXP_plates_unpacked"
     core.clean_dir(output_root)
     cache: dict[str, _DesignOutput] = {}
     part_bodies: dict[str, str] = {}
@@ -3298,7 +3314,7 @@ def export_plate_sets(records: list[dict[str, object]], target_zip: Path) -> dic
     )
     core.write_text_file(
         common_dir / "bhdc_plate_sets.jbeam",
-        "{\n// Reusable licence plate designs generated by BeamHDC.\n" + body_text + "\n}\n",
+        "{\n// Reusable licence plate designs generated by BeamXP.\n" + body_text + "\n}\n",
         encoding="utf-8",
     )
     mod_info = output_root / "mod_info"
@@ -3306,10 +3322,10 @@ def export_plate_sets(records: list[dict[str, object]], target_zip: Path) -> dic
     core.write_text_file(
         mod_info / "info.json",
         json.dumps({
-            "name": "BeamHDC Plate Sets",
+            "name": "BeamXP Plate Sets",
             "version": "1.0.0",
-            "authors": "BeamHDC",
-            "description": "Reusable BeamHDC licence plate designs for all supported vehicles.",
+            "authors": "BeamXP",
+            "description": "Reusable BeamXP licence plate designs for all supported vehicles.",
         }, indent=2),
         encoding="utf-8",
     )

@@ -1,4 +1,4 @@
-"""Licence plate editor dialog for the BeamHDC tool.
+"""Licence plate editor dialog for the BeamXP tool.
 
 Edits either the conversion's general plate settings or one trim's override
 (general/custom/off), with a live preview rendered by plate_generator. All
@@ -471,7 +471,7 @@ class PlateEditorDialog(tk.Toplevel):
         self._color_button(frame, "eu", "rearColor").grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
         ttk.Label(
             frame,
-            text="BeamHDC trim outputs use this; unchanged stock vehicles use the front colour.",
+            text="BeamXP trim outputs use this; unchanged stock vehicles use the front colour.",
         ).grid(row=1, column=2, sticky="w", padx=(10, 0), pady=(4, 0))
         ttk.Label(frame, text="Font colour").grid(row=2, column=0, sticky="w", pady=(4, 0))
         self._color_button(frame, "eu", "textColor").grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(4, 0))

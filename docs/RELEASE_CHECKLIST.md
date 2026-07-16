@@ -18,7 +18,7 @@ python -m py_compile beamng_hand_drive_core.py beamng_hand_drive_tool.py blender
 ```text
 v0.1.0-alpha
 
-First public alpha of BeamNG Hand Drive Converter.
+First public alpha of BeamXP (BeamNG Vehicle eXPort Services).
 
 Highlights:
 - Visual LHD/RHD conversion workflow for BeamNG vehicle zips
@@ -62,11 +62,11 @@ Build the non-technical-user release archive with:
 
 Confirm the generated archive contains:
 
-- `BeamHDC/BeamNG Hand Drive Converter.exe`
-- `BeamHDC/README.md`
-- `BeamHDC/LICENSE`
+- `BeamXP/BeamXP.exe`
+- `BeamXP/README.md`
+- `BeamXP/LICENSE`
 
 Confirm the standalone exe can build a conversion and install the generated mod zip into the configured BeamNG mods folder. It should also work when copied out of the release folder without README/LICENSE.
 
-Upload the generated `release/BeamHDC-<version>-windows.zip` to GitHub Releases. Keep the source code in the repository for users who prefer running the tool with Python.
+Upload the generated `release/BeamXP-<version>-windows.zip` to GitHub Releases. Keep the source code in the repository for users who prefer running the tool with Python.
 

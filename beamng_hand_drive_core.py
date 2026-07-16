@@ -23,12 +23,9 @@ import plate_generator
 
 
 def default_user_data_dir() -> Path:
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        return base / "BeamHDC"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "BeamHDC"
-    return Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "BeamHDC"
+    # Shared with plate_generator so the one-time BeamHDC -> BeamXP data
+    # folder migration runs no matter which module resolves the path first.
+    return plate_generator.default_user_data_dir()
 
 
 def default_beamng_mods_dir() -> Path:
@@ -38,7 +35,7 @@ def default_beamng_mods_dir() -> Path:
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 SOURCE_ROOT_DIR = APP_DIR.parent if APP_DIR.name == "beamng-hand-drive-converter" else APP_DIR
-USER_DATA_DIR = Path(os.environ.get("BEAMHDC_DATA_DIR") or default_user_data_dir())
+USER_DATA_DIR = Path(os.environ.get("BEAMXP_DATA_DIR") or os.environ.get("BEAMHDC_DATA_DIR") or default_user_data_dir())
 WORKSPACE_DIR = USER_DATA_DIR
 THIS_DIR = APP_DIR
 PROJECTS_DIR = USER_DATA_DIR / "handedness_conversion_projects"
@@ -4890,7 +4887,7 @@ def write_original_plate_configs(
         info["Configuration"] = plates_name
         info["Name"] = plates_name
         description = str(info.get("Description") or info.get("description") or "").strip()
-        info["Description"] = f"{description} - BeamHDC plate configuration" if description else "BeamHDC plate configuration"
+        info["Description"] = f"{description} - BeamXP plate configuration" if description else "BeamXP plate configuration"
         info["Config Type"] = "Custom"
         info["Source"] = conversion_source_name(context)
         write_text_file(output_vehicle_dir / f"info_{output_config}.json", json.dumps(info, indent=2), encoding="utf-8")
@@ -5365,11 +5362,11 @@ def write_mod_info(root: Path, context: VehicleContext) -> None:
     mod_info.mkdir(parents=True, exist_ok=True)
     source_name = conversion_source_name(context)
     info = {
-        "name": f"{context.vehicle_id} BeamHDC XP Conversion",
+        "name": f"{context.vehicle_id} BeamXP Conversion",
         "version": "0.1.0",
         "authors": source_name,
         "description": (
-            f"Generated BeamHDC handedness and/or plate configuration overlay for {context.vehicle_id}. "
+            f"Generated BeamXP handedness and/or plate configuration overlay for {context.vehicle_id}. "
             f"Depends on {context.source_zip.name}."
         ),
         "source": source_name,

@@ -5,12 +5,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
-$AppName = "BeamNG Hand Drive Converter"
+$AppName = "BeamXP"
 $DistExe = Join-Path $Root "dist\$AppName.exe"
-$StageDir = Join-Path $Root "dist\BeamHDC"
+$StageDir = Join-Path $Root "dist\BeamXP"
 $StageExe = Join-Path $StageDir "$AppName.exe"
 $ReleaseDir = Join-Path $Root "release"
-$ReleaseZip = Join-Path $ReleaseDir "BeamHDC-$Version-windows.zip"
+$ReleaseZip = Join-Path $ReleaseDir "BeamXP-$Version-windows.zip"
 
 Set-Location $Root
 
@@ -18,7 +18,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m pip install "pyinstaller>=6.0.0"
 
-python -m PyInstaller --noconfirm --clean ".\packaging\BeamNG Hand Drive Converter.spec"
+python -m PyInstaller --noconfirm --clean ".\packaging\BeamXP.spec"
 
 if (!(Test-Path $DistExe)) {
     throw "Expected PyInstaller output not found: $DistExe"
@@ -51,7 +51,7 @@ Compress-Archive -LiteralPath $StageDir -DestinationPath $ReleaseZip -Compressio
 # Unzipped copy for local use (git-ignored; only the zip is committed). The
 # zip above is the real artifact, so a locked folder (e.g. the exe is still
 # running from it) must not fail the build.
-$ReleaseFolder = Join-Path $ReleaseDir "BeamHDC-$Version-windows"
+$ReleaseFolder = Join-Path $ReleaseDir "BeamXP-$Version-windows"
 try {
     if (Test-Path $ReleaseFolder) {
         Remove-Item -LiteralPath $ReleaseFolder -Recurse -Force -ErrorAction Stop
