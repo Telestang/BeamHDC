@@ -12,9 +12,9 @@ a = Analysis(
     datas=[
         (str(ROOT / "blender_preview_backend.py"), "."),
         (str(ROOT / "BeamXP_icon.ico"), "."),
-        # Composited onto generated config previews; hdc_sticker_path() looks
+        # Composited onto generated config previews; xp_sticker_path() looks
         # for it in sys._MEIPASS in frozen builds.
-        (str(ROOT / "hdc_sticker.png"), "."),
+        (str(ROOT / "xp_sticker.png"), "."),
     ],
     hiddenimports=[],
     hookspath=[],

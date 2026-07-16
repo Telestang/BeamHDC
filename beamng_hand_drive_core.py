@@ -2234,63 +2234,63 @@ def source_preview_path(source_zip: Path, vehicle_path: str, config_name: str) -
 # Generated config preview sticker tuning. Origin values are fractions of the
 # preview image size, measured from the selected anchor corner. Positive X/Y
 # offsets move inward from that corner. The sticker keeps its own aspect ratio.
-HDC_STICKER_ANCHOR = "top_left"  # top_left, top_right, bottom_left, bottom_right
-HDC_STICKER_ORIGIN_X_FRACTION = 0.02
-HDC_STICKER_ORIGIN_Y_FRACTION = 0.18
+XP_STICKER_ANCHOR = "top_left"  # top_left, top_right, bottom_left, bottom_right
+XP_STICKER_ORIGIN_X_FRACTION = 0.02
+XP_STICKER_ORIGIN_Y_FRACTION = 0.18
 # 0.25 tuned against the 512px-wide HDC sticker; the XP sticker is 435px wide
 # at the same height, so 0.25 * 435/512 keeps the on-screen badge size equal.
-HDC_STICKER_WIDTH_FRACTION = 0.2124
+XP_STICKER_WIDTH_FRACTION = 0.2124
 
 
-def hdc_sticker_path() -> Path | None:
-    """Locate the bundled HDC sticker PNG. Checks the PyInstaller bundle dir
+def xp_sticker_path() -> Path | None:
+    """Locate the bundled XP sticker PNG. Checks the PyInstaller bundle dir
     first (frozen builds), then the source tree. Returns None if absent."""
     candidates = []
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        candidates.append(Path(meipass) / "hdc_sticker.png")
-    candidates.append(APP_DIR / "hdc_sticker.png")
-    candidates.append(SOURCE_ROOT_DIR / "hdc_sticker.png")
+        candidates.append(Path(meipass) / "xp_sticker.png")
+    candidates.append(APP_DIR / "xp_sticker.png")
+    candidates.append(SOURCE_ROOT_DIR / "xp_sticker.png")
     for candidate in candidates:
         if candidate.exists():
             return candidate
     return None
 
 
-def hdc_sticker_position(
+def xp_sticker_position(
     image_size: tuple[int, int],
     sticker_size: tuple[int, int],
 ) -> tuple[int, int]:
     image_w, image_h = image_size
     sticker_w, sticker_h = sticker_size
-    offset_x = round(image_w * HDC_STICKER_ORIGIN_X_FRACTION)
-    offset_y = round(image_h * HDC_STICKER_ORIGIN_Y_FRACTION)
-    anchor = HDC_STICKER_ANCHOR.lower()
+    offset_x = round(image_w * XP_STICKER_ORIGIN_X_FRACTION)
+    offset_y = round(image_h * XP_STICKER_ORIGIN_Y_FRACTION)
+    anchor = XP_STICKER_ANCHOR.lower()
     x = image_w - sticker_w - offset_x if "right" in anchor else offset_x
     y = image_h - sticker_h - offset_y if "bottom" in anchor else offset_y
     return max(0, min(image_w - sticker_w, x)), max(0, min(image_h - sticker_h, y))
 
 
-def composite_hdc_sticker(image):
-    """Alpha-composite the HDC sticker onto generated preview images. Returns
+def composite_xp_sticker(image):
+    """Alpha-composite the XP sticker onto generated preview images. Returns
     a new RGBA image on success, or the input unchanged if the sticker asset is
     missing or anything fails -- a sticker problem must never discard the
     generated/mirrored preview it is decorating."""
     try:
         from PIL import Image
 
-        sticker_path = hdc_sticker_path()
+        sticker_path = xp_sticker_path()
         if sticker_path is None:
             return image
         base = image.convert("RGBA")
         with Image.open(sticker_path) as raw:
             sticker = raw.convert("RGBA")
-        target_w = max(1, min(base.width, round(base.width * HDC_STICKER_WIDTH_FRACTION)))
+        target_w = max(1, min(base.width, round(base.width * XP_STICKER_WIDTH_FRACTION)))
         scale = target_w / sticker.width
         target_h = max(1, min(base.height, round(sticker.height * scale)))
         resample = getattr(Image, "Resampling", Image).LANCZOS
         sticker = sticker.resize((target_w, target_h), resample)
-        base.alpha_composite(sticker, hdc_sticker_position(base.size, sticker.size))
+        base.alpha_composite(sticker, xp_sticker_position(base.size, sticker.size))
         return base
     except Exception:
         return image
@@ -2315,9 +2315,9 @@ def write_mirrored_preview(
 
         with Image.open(io.BytesIO(data)) as image:
             mirrored = ImageOps.mirror(image)
-            # Final compositing step: brand the generated preview with the HDC
+            # Final compositing step: brand the generated preview with the XP
             # sticker (top-left, alpha-blended). Never applied to stock originals.
-            mirrored = composite_hdc_sticker(mirrored)
+            mirrored = composite_xp_sticker(mirrored)
             save_kwargs: dict[str, object] = {}
             image_format = image.format or Path(preview_path).suffix.lstrip(".").upper()
             if image_format.upper() in {"JPG", "JPEG"}:
@@ -2340,7 +2340,7 @@ def write_stock_preview(
     config_name: str,
     output_config: str,
 ) -> Path | None:
-    """Copy a source preview for a plates-only trim and add the HDC marker."""
+    """Copy a source preview for a plates-only trim and add the XP marker."""
     preview_path = source_preview_path(context.source_zip, context.vehicle_path, config_name)
     if not preview_path:
         return None
@@ -2351,7 +2351,7 @@ def write_stock_preview(
         from PIL import Image
 
         with Image.open(io.BytesIO(data)) as image:
-            branded = composite_hdc_sticker(image)
+            branded = composite_xp_sticker(image)
             image_format = image.format or Path(preview_path).suffix.lstrip(".").upper()
             save_kwargs: dict[str, object] = {}
             if image_format.upper() in {"JPG", "JPEG"}:
