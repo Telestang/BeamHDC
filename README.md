@@ -164,7 +164,7 @@ Each trim can carry its own plate setup. Pick `Off`, `Custom`, or a saved plate 
 
 Three plate families are supported: `EU` (wide), and `US` and `JP` (both 2:1). Every design has:
 
-- **Font** — pick a bundled plate font, or drop your own `.ttf`/`.otf` into the BeamXP fonts folder (`Folder` opens it, `Links...` suggests places to find fonts).
+- **Font** — plate fonts are not bundled, because most plate-style fonts are not licensed for redistribution. The default uses a plain system font; for authentic lettering, drop `.ttf`/`.otf` files into the BeamXP fonts folder (`Folder` opens it). `Links...` lists plate-style fonts advertised as free for personal use — UK, German/EU DIN and FE-Schrift, Dutch, and more. Combined with the EU template's colours and bands, the right font can reproduce pretty much any country's plate.
 - **Registration pattern** — `@` = letter, `#` = digit, `~` = letter or digit, `.` = centre dot. Exported trims get a generated registration from the pattern; on unexported stock vehicles BeamNG keeps supplying its own text.
 - **Emboss strength** and an optional **border** (colour, offset, thickness, corner radius).
 - A **live preview** with a front/rear toggle and a `Regenerate` button for the sample registration.
