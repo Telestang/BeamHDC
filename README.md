@@ -23,6 +23,7 @@ The tool is new. It has been working well in my own testing, but there may be is
 - Converts in both directions: LHD to RHD and RHD to LHD.
 - Lists `.pc` variants/trims and batch converts all selected variants in one build.
 - Can export a converted trim, a Plates Only copy of the original trim, or both in one vehicle mod.
+- Generates custom EU, US, and JP licence plate designs: fonts, colours, borders, side bands, emboss, and registration patterns, with a live front/rear preview.
 - Keeps reusable licence-plate sets in a global library and can export them as one universal plates mod.
 - Selects front and rear plate meshes independently from BeamNG's shared vanilla physical-plate library; each trim's stock part is labelled `(default)` and `None` is available per side.
 - Shows a live in-app 3D preview of the conversion that updates as you work.
@@ -47,8 +48,9 @@ The tool is new. It has been working well in my own testing, but there may be is
    - `Mirror Aesthetic` for parts that only need visual mirroring.
    - `Mirror Structural` for paired parts where you want the opposite-side mesh on the existing structure, such as door cards or mirrors.
 6. Mark the steering wheel part as `Steering Ref` if automatic delta detection needs help.
-7. Use the in-app preview or Blender preview to inspect alignment.
-8. When the preview looks right, set the BeamNG mods folder and click `Build + Install`.
+7. Optionally set `Licence plates` to a custom design or a saved set — see Licence Plates below.
+8. Use the in-app preview or Blender preview to inspect alignment.
+9. When the preview looks right, set the BeamNG mods folder and click `Build + Install`.
 
 Enjoying driving from the other side? Star the repo to help other people find it, or support development on [Ko-fi](https://ko-fi.com/telestang).
 
@@ -154,6 +156,33 @@ Where mirroring creates a significant visual asymmetry — a vehicle with only a
 
 Swaps an opposite-side mirrored mesh onto the existing source-side JBeam structure. This is useful for paired parts like door cards or mirrors where you want the visual side to change but still deform with the existing door/mirror structure.
 
+## Licence Plates
+
+Each trim can carry its own plate setup. Pick `Off`, `Custom`, or a saved plate set in the `Licence plates` dropdown (or per trim in the `Plates` column of the variants table), then `Configure...` opens the plate editor. A trim's converted and Plates Only outputs deliberately share one plate selection.
+
+### Plate designs
+
+Three plate families are supported: `EU` (wide), and `US` and `JP` (both 2:1). Every design has:
+
+- **Font** — pick a bundled plate font, or drop your own `.ttf`/`.otf` into the BeamXP fonts folder (`Folder` opens it, `Links...` suggests places to find fonts).
+- **Registration pattern** — `@` = letter, `#` = digit, `~` = letter or digit, `.` = centre dot. Exported trims get a generated registration from the pattern; on unexported stock vehicles BeamNG keeps supplying its own text.
+- **Emboss strength** and an optional **border** (colour, offset, thickness, corner radius).
+- A **live preview** with a front/rear toggle and a `Regenerate` button for the sample registration.
+
+Family-specific options:
+
+- `EU`: front and rear background colours (the rear colour applies to exported trims; stock vehicles use the front colour on both sides), font colour, character spacing, and a side band — the EU band with a country code, or a fully custom band with its own colour, code text, emblem, or full band image.
+- `US`: background colour or a full background image (the image overrides the colour), font colour, text scale, horizontal/vertical text offsets, and character spacing.
+- `JP`: plate style (Private white, Kei yellow, Commercial green, Kei commercial black), region, classification, and kana; the registration pattern fills the main number (e.g. `##-##`).
+
+### Plate library
+
+`Library...` manages reusable plate sets: `New`, `Duplicate`, `Rename`, `Delete`, `Edit`. Set references are live — editing a set updates every conversion that references it, and builds embed a snapshot as a fallback. `Export plates mod...` writes any selection of sets into one universal `BeamXP_plates.zip` that works from the parts menu on all supported vehicles, and can install it straight into the configured mods folder. Universal plate-set designs use the front colour on both sides.
+
+### Physical plate meshes
+
+Independently of the design, each trim's front and rear physical plate parts can be swapped using BeamNG's shared vanilla plate meshes. The trim's stock part is labelled `(default)` and `None` removes the plate on that side. Different front/rear background colours need a converted or Plates Only trim because the tool must clone a rear plate part to carry the second texture.
+
 ## Physics And Deformation Notes
 
 The tool does not move the physical JBeam structure for driver controls. The physical steering wheel, pedals, handbrake, and similar interior structures remain where they are in the source vehicle. The generated mod moves their visual representation.
@@ -190,18 +219,12 @@ layout` changes the previewed transform state without changing its selected plat
 
 Reusable plate sets are stored separately under `%LOCALAPPDATA%/BeamXP/plates/`. Renaming a set is
 safe because projects reference its fixed ID. Builds resolve the latest set contents and embed a
-snapshot; if a referenced set is later deleted, the snapshot is used with a build warning. The plate
-library can export selected sets to `BeamXP_plates.zip` for use in the parts menu on stock vehicles.
+snapshot; if a referenced set is later deleted, the snapshot is used with a build warning.
 
 Model-local custom designs are labelled `Custom (<vehicle ID>)` and `Custom (<config name>)`. Once a
 trim custom exists, other trims can select it and share the same live definition without adding it to
-the global library. A trim's converted and Plates Only outputs deliberately share one plate selection;
-BeamNG's parts menu can still switch either vehicle to any generated custom or library design in game.
-
-On stock vehicles BeamNG controls the registration text; a BeamXP pattern such as `@@## @@@` only
-generates registrations for exported trim configs. Different front/rear background colours require a
-converted or plates-only trim because BeamXP must select a cloned rear plate part. Universal designs
-use the front colour on both sides.
+the global library. BeamNG's parts menu can still switch either vehicle to any generated custom or
+library design in game.
 
 The output mod zip also embeds a copy of the conversion settings at:
 
