@@ -121,6 +121,7 @@ def default_plate_config() -> dict[str, object]:
             "frontColor": "#ffffff",
             "rearColor": "#ffffff",
             "textColor": "#101010",
+            "textX": 0.0,
             "spacing": 0,
             "sideBand": BAND_NONE,
             "bandCode": "",
@@ -1108,7 +1109,13 @@ def _family_text_params(cfg: dict[str, object], fmt: str, metrics: _FontMetrics)
     limit = max(12, len(active_pattern(cfg)))
     if size_family == PLATE_SIZE_EU:
         eu = cfg["eu"]
-        tx = 0.5 + (_EU_BAND_FRACTION / 2 if str(eu.get("sideBand")) != BAND_NONE else 0.0)
+        # User offset stacks on the band compensation so 0 always means
+        # "centred in the visible plate face".
+        tx = (
+            0.5
+            + max(-0.4, min(0.4, float(eu.get("textX") or 0.0)))
+            + (_EU_BAND_FRACTION / 2 if str(eu.get("sideBand")) != BAND_NONE else 0.0)
+        )
         color = str(eu.get("textColor") or "#101010")
         if not wide:
             # A wide EU registration on a 2:1 plate wraps onto two lines.
@@ -1576,10 +1583,11 @@ def _mode_blocks(
 
 
 class _DesignOutput:
-    def __init__(self, key: str, part_id: str, rear_formats: dict[str, str]):
+    def __init__(self, key: str, part_id: str, rear_formats: dict[str, str], *, rear_differs: bool = False):
         self.key = key
         self.part_id = part_id
-        self.rear_formats = rear_formats  # vanilla fmt -> rear fmt id (empty when front==rear)
+        self.rear_formats = rear_formats  # vanilla fmt -> rear fmt id
+        self.rear_differs = rear_differs  # rear texture differs from the front
 
 
 def _emit_design(
@@ -1619,9 +1627,12 @@ def _emit_design(
 
     design_rel = f"vehicles/common/licenseplates/{prefix}/design_{design_key}"
     design_dir = plates_root / f"design_{design_key}"
-    rear_formats = (
-        {_FORMAT_WIDE: _REAR_FORMAT_WIDE, _FORMAT_2_1: _REAR_FORMAT_2_1} if _rear_texture_differs(cfg) else {}
-    )
+    # Every design defines the bhdc rear formats, mirroring the front when the
+    # rear does not differ. XP vehicles clone their rear plate parts onto these
+    # formats, so a design without them would leave the rear plate on the plain
+    # white fallback texture as soon as it is selected in-game.
+    rear_differs = _rear_texture_differs(cfg)
+    rear_formats = {_FORMAT_WIDE: _REAR_FORMAT_WIDE, _FORMAT_2_1: _REAR_FORMAT_2_1}
 
     formats: dict[str, object] = {}
     for fmt in (_FORMAT_WIDE, _FORMAT_2_1):
@@ -1668,7 +1679,7 @@ def _emit_design(
     core.write_text_file(design_dir / "licensePlate.json", json.dumps(design_json, indent=2, ensure_ascii=False), encoding="utf-8")
 
     part_id = f"bhdc_plateset_{_safe_set_id(set_id).replace('-', '_')}" if set_id else f"bhdc_plate_design_{design_key}"
-    out = _DesignOutput(design_key, part_id, rear_formats)
+    out = _DesignOutput(design_key, part_id, rear_formats, rear_differs=rear_differs)
     out.design_json_rel = f"{design_rel}/licensePlate.json"
     cache[cache_key] = out
     return out
@@ -3260,6 +3271,9 @@ def apply_to_build(
             parts[_DESIGN_SLOT] = design.part_id
 
             if design.rear_formats and rear_choice != PLATE_PART_NONE:
+                # Clone the rear part even when this design's rear matches its
+                # front, so a rear-differing design selected in-game later
+                # still gets its own rear texture.
                 cloned = _clone_rear_parts_for_config(
                     context,
                     config_name,
@@ -3271,7 +3285,7 @@ def apply_to_build(
                     parts,
                     summary,
                 )
-                if not cloned:
+                if not cloned and design.rear_differs:
                     summary["warnings"].append(
                         f"{config_name}: no rear plate part found; rear plate keeps the front colour"
                     )
@@ -3360,6 +3374,15 @@ def export_plate_sets(records: list[dict[str, object]], target_zip: Path) -> dic
     target_zip.parent.mkdir(parents=True, exist_ok=True)
     core.make_zip(output_root, target_zip)
     return {"zip": target_zip, "setIds": exported, "designs": len(part_bodies)}
+
+
+def export_all_plate_sets(target_zip: Path | None = None) -> dict[str, object] | None:
+    """Export every library plate set as the universal plates mod, or None
+    when the library is empty."""
+    records = plate_set_records()
+    if not records:
+        return None
+    return export_plate_sets(records, target_zip or default_plate_export_path())
 
 
 def _clone_rear_parts_for_config(

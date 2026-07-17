@@ -280,6 +280,94 @@ class PlateXpTests(unittest.TestCase):
         self.assertEqual(cloned["slotType"], "test_licenseplate_F")
         self.assertEqual(cloned["flexbodies"][1][0], "licenseplate-52-11-r0_5")
 
+    def test_designs_always_define_rear_formats_even_when_rear_matches_front(self) -> None:
+        config = plate_generator.default_plate_config()
+        config["enabled"] = True
+        self.assertFalse(plate_generator._rear_texture_differs(config))
+        plate_generator.save_plate_set({"id": "same-both", "name": "Same Both", "config": config})
+
+        result = plate_generator.export_all_plate_sets()
+        with zipfile.ZipFile(result["zip"]) as archive:
+            design_path = next(
+                name for name in archive.namelist() if name.endswith("licensePlate.json")
+            )
+            design = json.loads(archive.read(design_path).decode("utf-8"))
+        formats = design["data"]["format"]
+        self.assertIn("bhdc-rear-wide", formats)
+        self.assertIn("bhdc-rear-2-1", formats)
+        self.assertIn("52-11", formats)
+        self.assertIn("30-15", formats)
+
+    def test_rear_part_is_cloned_even_when_the_design_rear_matches_the_front(self) -> None:
+        context = self._context(with_plate_parts=True)
+        conversion = core.base_conversion_config(context)
+        settings = conversion["variants"]["base"]
+        core.set_variant_build_mode(settings, core.BUILD_ORIGINAL)
+        config = plate_generator.default_plate_config()
+        config["enabled"] = True
+        conversion["plate"] = {"mode": "custom", "setId": "", "config": config}
+
+        result = core.build_batch(context, conversion, write_zip=False)
+        generated_path = result.unpacked_dir / "vehicles/test/base_plates.pc"
+        generated = json.loads(generated_path.read_text(encoding="utf-8"))
+        rear_part = generated["parts"]["test_licenseplate_R"]
+        self.assertTrue(rear_part.startswith("bhdc_rear_"), rear_part)
+        self.assertEqual(result.plate_summary.get("rearPartsCloned"), 1)
+        self.assertEqual(result.plate_summary.get("warnings"), [])
+        generated_parts = core.parse_beamng_json(
+            (generated_path.parent / "jbeam/bhdc_licenseplates.jbeam").read_text(encoding="utf-8"),
+            label="bhdc_licenseplates.jbeam",
+        )
+        self.assertEqual(generated_parts[rear_part]["licenseplateFormat"], "bhdc-rear-wide")
+
+    def test_eu_horizontal_text_offset_shifts_the_band_aware_centre(self) -> None:
+        font_path = plate_generator.resolve_font_path({"source": "default", "path": ""})
+        _font, metrics = plate_generator._plate_font_metrics(font_path)
+
+        def text_x(**eu_overrides):
+            cfg = plate_generator.normalized_plate_config({"size": "EU", "eu": eu_overrides})
+            return plate_generator._family_text_params(cfg, "52-11", metrics)["x"]
+
+        self.assertEqual(text_x(sideBand="none"), 0.5)
+        self.assertEqual(text_x(sideBand="none", textX=0.2), 0.7)
+        # band compensation still applies underneath the user offset
+        band_centre = 0.5 + plate_generator._EU_BAND_FRACTION / 2
+        self.assertEqual(text_x(sideBand="eu", textX=-0.1), round(band_centre - 0.1, 4))
+        # out-of-range values clamp instead of pushing text off the plate
+        self.assertEqual(text_x(sideBand="none", textX=9), 0.9)
+
+    def test_export_all_plate_sets_is_none_for_empty_library(self) -> None:
+        self.assertIsNone(plate_generator.export_all_plate_sets())
+
+    def test_install_refreshes_universal_plates_mod_with_all_library_sets(self) -> None:
+        for set_id, name in (("set-one", "Set One"), ("set-two", "Set Two")):
+            config = plate_generator.default_plate_config()
+            config["enabled"] = True
+            plate_generator.save_plate_set({"id": set_id, "name": name, "config": config})
+
+        context = self._context(with_plate_parts=True)
+        conversion = core.base_conversion_config(context)
+        settings = conversion["variants"]["base"]
+        core.set_variant_build_mode(settings, core.BUILD_ORIGINAL)
+        settings["frontPlate"] = "mesh:licenseplate-52-11"
+
+        mods_folder = self.root / "mods"
+        result = core.build_batch(
+            context,
+            conversion,
+            write_zip=True,
+            install=True,
+            mods_folder=mods_folder,
+        )
+        self.assertEqual(result.installed_plates_zip, mods_folder / "BeamXP_plates.zip")
+        self.assertTrue(result.installed_plates_zip.is_file())
+        self.assertEqual(result.plate_summary.get("libraryModDesigns"), 2)
+        with zipfile.ZipFile(result.installed_plates_zip) as archive:
+            jbeam = archive.read("vehicles/common/licenseplates/bhdc_plate_sets.jbeam").decode("utf-8")
+        parts = core.parse_beamng_json(jbeam, label="bhdc_plate_sets.jbeam")
+        self.assertIn("bhdc_plateset_set_one", parts)
+        self.assertIn("bhdc_plateset_set_two", parts)
+
 
 class BackgroundImageTests(unittest.TestCase):
     def setUp(self) -> None:

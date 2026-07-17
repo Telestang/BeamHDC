@@ -174,6 +174,7 @@ class BuildResult:
     generated_daes: list[Path]
     skipped_variants: dict[str, str]
     plate_summary: dict[str, object] = field(default_factory=dict)
+    installed_plates_zip: Path | None = None
 
 
 def vehicle_ids_in_zip(source_zip: Path) -> list[str]:
@@ -5599,6 +5600,7 @@ def build_batch(
 
     package_zip = None
     installed_zip = None
+    installed_plates_zip = None
     if write_zip:
         package_zip = build_dir / package_name_for_context(context)
         make_zip(output_root, package_zip)
@@ -5610,6 +5612,19 @@ def build_batch(
         mods_folder.mkdir(parents=True, exist_ok=True)
         installed_zip = mods_folder / package_zip.name
         shutil.copy2(package_zip, installed_zip)
+        # Refresh the universal plates mod alongside the vehicle so every
+        # library design stays selectable on any vehicle, not just the sets
+        # bound to this build. A broken library set must not fail the build.
+        try:
+            plates_mod = plate_generator.export_all_plate_sets()
+        except plate_generator.PlateError as exc:
+            plate_summary.setdefault("warnings", []).append(f"plates library mod not refreshed: {exc}")
+        else:
+            if plates_mod is not None:
+                plates_zip = Path(plates_mod["zip"])
+                installed_plates_zip = mods_folder / plates_zip.name
+                shutil.copy2(plates_zip, installed_plates_zip)
+                plate_summary["libraryModDesigns"] = plates_mod["designs"]
 
     save_conversion(context, conversion)
     return BuildResult(
@@ -5620,4 +5635,5 @@ def build_batch(
         generated_daes=generated_daes,
         skipped_variants=skipped,
         plate_summary=plate_summary,
+        installed_plates_zip=installed_plates_zip,
     )

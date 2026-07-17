@@ -35,11 +35,23 @@ Set-based parts use `bhdc_plateset_<id>` in both vehicle XP builds and the unive
 duplicate designs when both mods are installed.
 
 The library manager supports New, Duplicate, Rename, Delete, Edit, and a checked export to one
-`BeamXP_plates.zip`. Font atlases always contain A-Z, 0-9, space, hyphen, and period so registrations
-chosen by stock vehicles remain visible.
+`BeamXP_plates.zip`. Installing a vehicle build also regenerates `BeamXP_plates.zip` with the whole
+library and copies it into the mods folder, so every library design is selectable on any vehicle;
+a broken library set downgrades to a build warning instead of failing the vehicle install. Font
+atlases always contain A-Z, 0-9, space, hyphen, and period so registrations chosen by stock
+vehicles remain visible.
 
 ## Deliberate boundaries
 
 - Registration patterns generate text for BeamXP-exported configs, not arbitrary stock configs.
 - A rear colour different from the front requires an XP vehicle trim and its cloned rear part.
-- Universal plate-set designs use the front colour for both sides.
+- On stock (non-XP) vehicles, plate-set designs use the front colour for both sides.
+
+## Rear formats on every design
+
+Every emitted design defines the `bhdc-rear-wide`/`bhdc-rear-2-1` formats, mirroring the front
+texture when the rear does not differ, and XP builds clone the rear plate part whenever a design
+is applied — not only when that design's rear differs. Both halves are required so plate designs
+can be swapped freely in-game on XP vehicles: a cloned rear part asking for a rear format that the
+selected design lacks falls back to the plain white default texture, and a vehicle without the
+rear clone renders the front texture on both sides regardless of the design's rear settings.

@@ -6,7 +6,7 @@ Convert any BeamNG.drive vehicle — vanilla or mod — between left-hand drive 
 
 *BeamXP was previously named BeamHDC (BeamNG Hand Drive Converter).*
 
-![A converted RHD Sunburst next to its stock LHD counterpart](Screenshots/sunburst_sunset_pair.jpg)
+![One car, three BeamXP configs: Cypriot, Japanese, and British RHD builds with their generated plates](Screenshots/beamxp_poster.png)
 
 The aim is practical gameplay use: convert a car into the driver's preferred handedness with as little manual work as possible. The tool keeps the source vehicle physics, drivetrain, suspension, tires, handling, and damage model intact. It changes the visible driver environment by mirroring, translating, and remapping selected meshes and visual JBeam references.
 
@@ -23,8 +23,8 @@ The tool is new. It has been working well in my own testing, but there may be is
 - Converts in both directions: LHD to RHD and RHD to LHD.
 - Lists `.pc` variants/trims and batch converts all selected variants in one build.
 - Can export a converted trim, a Plates Only copy of the original trim, or both in one vehicle mod.
-- Generates custom EU, US, and JP licence plate designs: fonts, colours, borders, side bands, emboss, and registration patterns, with a live front/rear preview.
-- Keeps reusable licence-plate sets in a global library and can export them as one universal plates mod.
+- Generates custom EU, US, and JP licence plate designs: fonts, colours, borders, side bands, background images, emboss, and registration patterns, with a live front/rear preview.
+- Keeps reusable licence-plate sets in a global library and exports them as one universal plates mod, so every design is selectable on any vehicle — refreshed automatically on each install.
 - Selects front and rear plate meshes independently from BeamNG's shared vanilla physical-plate library; each trim's stock part is labelled `(default)` and `None` is available per side.
 - Shows a live in-app 3D preview of the conversion that updates as you work.
 - Builds one output mod zip containing all selected XP trim outputs and installs it into your BeamNG mods folder.
@@ -166,19 +166,19 @@ Three plate families are supported: `EU` (wide), and `US` and `JP` (both 2:1). E
 
 - **Font** — plate fonts are not bundled, because most plate-style fonts are not licensed for redistribution. The default uses a plain system font; for authentic lettering, drop `.ttf`/`.otf` files into the BeamXP fonts folder (`Folder` opens it). `Links...` lists plate-style fonts advertised as free for personal use — UK, German/EU DIN and FE-Schrift, Dutch, and more. Combined with the EU template's colours and bands, the right font can reproduce pretty much any country's plate.
 - **Registration pattern** — `@` = letter, `#` = digit, `~` = letter or digit, `.` = centre dot. Exported trims get a generated registration from the pattern; on unexported stock vehicles BeamNG keeps supplying its own text.
-- **Background images** — optional separate front and rear uploads, for any family, sitting beside the matching colour controls. Images scale to fill the plate and centre-crop the overflowing dimension, overriding that side's background colour; a side without an image keeps its solid colour. Like a distinct rear colour, a front/rear image mismatch needs a converted or Plates Only trim.
+- **Background images** — optional separate front and rear uploads, for any family, sitting beside the matching colour controls. Images scale to fill the plate and centre-crop the overflowing dimension, overriding that side's background colour; a side without an image keeps its solid colour. Like a distinct rear colour, a front/rear image mismatch needs a converted or Plates Only trim. Ideal upload sizes match the rendered texture canvases: **1024×196** for the wide EU plate (52-11) and **512×256** for the squarish US/JP plate (30-15) — clean multiples (2048×392, 1024×512, ...) also map exactly; any other aspect ratio gets centre-cropped. Note that an enabled side band is drawn opaquely over the left 11% of the EU image, so either leave that strip as throwaway background or paint your own band and set the side band to `None`.
 - **Emboss strength** and an optional **border** (colour, offset, thickness, corner radius).
 - A **live preview** with a front/rear toggle and a `Regenerate` button for the sample registration.
 
 Family-specific options:
 
-- `EU`: front and rear background colours (the rear colour applies to exported trims; stock vehicles use the front colour on both sides), font colour, character spacing, and a side band — the EU band with a country code, or a fully custom band with its own colour, code text, emblem, or full band image.
+- `EU`: front and rear background colours (the rear colour applies to exported trims; stock vehicles use the front colour on both sides), font colour, horizontal text offset, character spacing, and a side band — the EU band with a country code, or a fully custom band with its own colour, code text, emblem, or full band image. The text offset shifts the registration left or right of its band-aware centre, e.g. to clear a centre emblem in a background image.
 - `US`: background colour, font colour, text scale, horizontal/vertical text offsets, and character spacing.
 - `JP`: plate style (Private white, Kei yellow, Commercial green, Kei commercial black), region, classification, and kana; the registration pattern fills the main number (e.g. `##-##`).
 
 ### Plate library
 
-`Library...` manages reusable plate sets: `New`, `Duplicate`, `Rename`, `Delete`, `Edit`. Set references are live — editing a set updates every conversion that references it, and builds embed a snapshot as a fallback. `Export plates mod...` writes any selection of sets into one universal `BeamXP_plates.zip` that works from the parts menu on all supported vehicles, and can install it straight into the configured mods folder. Universal plate-set designs use the front colour on both sides.
+`Library...` manages reusable plate sets: `New`, `Duplicate`, `Rename`, `Delete`, `Edit`. Set references are live — editing a set updates every conversion that references it, and builds embed a snapshot as a fallback. `Export plates mod...` writes any selection of sets into one universal `BeamXP_plates.zip` that works from the parts menu on all supported vehicles, and can install it straight into the configured mods folder. Every `Build + Install` also refreshes this mod automatically with the entire library, so all library designs stay selectable on any vehicle — not just the sets bound to the installed conversion. On XP-converted trims, switching between library designs in-game keeps the correct rear texture (every design carries rear-format variants); on stock vehicles, plate-set designs use the front colour on both sides.
 
 ### Physical plate meshes
 

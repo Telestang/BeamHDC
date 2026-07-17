@@ -3709,6 +3709,8 @@ class HandDriveToolApp(tk.Tk):
                 warnings = plates.get("warnings") or []
                 if warnings:
                     plate_note += f" ({len(warnings)} plate warning(s), see conversion.json)"
+            if result.installed_plates_zip:
+                plate_note += f"; plate library mod refreshed ({plates.get('libraryModDesigns', 0)} design(s))"
             if result.installed_zip:
                 self.status_var.set(
                     f"Built {result.package_zip} and installed {result.installed_zip}; "

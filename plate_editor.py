@@ -479,16 +479,14 @@ class PlateEditorDialog(tk.Toplevel):
         self._image_picker(frame, "background", "rearImage", "Choose rear plate background image").grid(
             row=1, column=2, sticky="ew", padx=(10, 0), pady=(4, 0)
         )
-        ttk.Label(
-            frame,
-            text="BeamXP trim outputs use the rear settings; unchanged stock vehicles use the front ones.",
-        ).grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0))
         ttk.Label(frame, text="Font colour").grid(row=3, column=0, sticky="w", pady=(4, 0))
         self._color_button(frame, "eu", "textColor").grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
         ttk.Label(frame, text="Character spacing").grid(row=4, column=0, sticky="w", pady=(4, 0))
         self._spin(frame, "eu", "spacing", -20, 60, 1, integer=True).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+        ttk.Label(frame, text="Horizontal text offset").grid(row=5, column=0, sticky="w", pady=(4, 0))
+        self._spin(frame, "eu", "textX", -0.4, 0.4, 0.01).grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
 
-        ttk.Label(frame, text="Side band").grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(frame, text="Side band").grid(row=6, column=0, sticky="w", pady=(8, 0))
         self.band_var = tk.StringVar(value=PLATE_BAND_LABELS.get(str(self.cfg["eu"].get("sideBand")), "None"))
         band_combo = ttk.Combobox(
             frame,
@@ -497,7 +495,7 @@ class PlateEditorDialog(tk.Toplevel):
             state="readonly",
             width=10,
         )
-        band_combo.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        band_combo.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
         band_combo.bind("<<ComboboxSelected>>", lambda _event: self._band_changed())
 
         # The band-specific controls live in a rebuildable child frame. Match
@@ -511,7 +509,7 @@ class PlateEditorDialog(tk.Toplevel):
             default=0,
         )
         self.band_detail = ttk.Frame(frame)
-        self.band_detail.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.band_detail.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.band_detail.columnconfigure(0, minsize=label_column_width)
         self.band_detail.columnconfigure(2, weight=1)
         self._rebuild_band_detail()

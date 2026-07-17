@@ -10,12 +10,22 @@ Screenshots/sunburst2_rhd.png
 Screenshots/sunburst2_rhd_lhd.png
 Screenshots/sunburst_sunset_pair.png
 
-# Poster artwork (kept local only)
+# Poster artwork (kept local only; the finished beamxp_poster.png and
+# beamxp_logo.png are committed)
 Screenshots/beamhdc_poster.png
 Screenshots/poster_draft.png
 Screenshots/beamhdc_poster_generator.py
 Screenshots/sunburst_sunset_pair_banner.jpg
 Screenshots/sunburst_sunset_pair_banner.png
+Screenshots/beamxp_poster_generator.py
+Screenshots/CY_front_plate.png
+Screenshots/CY_rear_plate.png
+Screenshots/JP_plate.png
+Screenshots/UK_front_plate.png
+Screenshots/UK_rear_plate.png
+Screenshots/Flag_of_Cyprus.svg
+Screenshots/Flag_of_Japan.svg
+Screenshots/Flag_of_the_United_Kingdom.svg
 
 # Generated project/build output
 handedness_conversion_projects/
