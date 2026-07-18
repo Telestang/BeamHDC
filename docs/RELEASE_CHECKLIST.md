@@ -16,21 +16,23 @@ python -m py_compile beamng_hand_drive_core.py beamng_hand_drive_tool.py blender
 ## Suggested GitHub Release Notes
 
 ```text
-v0.2.0-alpha
+v0.2.1-alpha
 
-BeamHDC is now BeamXP (BeamNG Vehicle eXPort Services) - the exe, data
-folder, and repository carry the new name, and existing settings and plate
-libraries migrate automatically.
+Faster, smarter part-mode workflow: the whole vanilla ETK 800-Series
+converts in under 7 seconds per trim (see the demo in the README).
 
 Highlights:
-- Custom licence plate generation: EU, US, and JP design families with
-  fonts, colours, borders, side bands, emboss, and registration patterns
-- Front and rear background image uploads for any plate family
-- Reusable plate sets in a global library, exportable as one universal
-  plates mod
-- Plates Only trim exports alongside converted trims in one vehicle mod
-- Independent front/rear physical plate mesh selection per trim
-- Live front/rear plate preview in the editor
+- Flip Tex: un-mirrors the texture on mirrored display screens so satnav
+  and infotainment content keeps its left/right reading
+- Smarter Recommend Modes, tuned against hand-verified conversions:
+  steering wheels, screens (mirror + Flip Tex), one-sided seat/mirror
+  hardware, and cleaner handling of lhd/rhd part names
+- Mode dropdown on the parts table plus Q/W/E/R hotkeys (Skip / Mirror
+  Aesthetic / Mirror Structural / Translate), hotkeys work straight from
+  the 3D preview
+- More robust steering-ref auto-detection (plain "steer" names, vehicle's
+  own wheel preferred over shared-library wheels), and detection re-runs
+  on load when a project has no reference set
 
 Known limitations:
 - Severe crash deformation of some converted interior visuals may not perfectly match a hand-authored conversion
@@ -59,7 +61,7 @@ Keep the GitHub repository to the tool code and conversion configs. Do not put s
 Build the non-technical-user release archive with:
 
 ```powershell
-.\packaging\build_windows.ps1 -Version 0.2.0-alpha
+.\packaging\build_windows.ps1 -Version 0.2.1-alpha
 ```
 
 Confirm the generated archive contains:

@@ -171,7 +171,43 @@ def reverse_polylist(polylist: ET.Element) -> None:
     p.text = " ".join(out)
 
 
-def mirrored_geometry(geometry: ET.Element, new_id: str) -> ET.Element:
+def texcoord_source_ids(mesh: ET.Element) -> set[str]:
+    out: set[str] = set()
+    for input_elem in mesh.findall(".//c:input", NS):
+        if input_elem.get("semantic") != "TEXCOORD":
+            continue
+        source_url = input_elem.get("source", "")
+        if source_url.startswith("#"):
+            out.add(source_url[1:])
+    return out
+
+
+def flip_texcoord_s_float_array(source: ET.Element) -> None:
+    """Reflect the S (horizontal) texture coordinate across the source's own
+    S range. Reflecting within the existing bounds instead of around 0.5 keeps
+    the mesh sampling the exact same texel region of the atlas, so display
+    meshes (nav screens, badges) read un-mirrored after a geometric mirror."""
+    float_array = source.find("c:float_array", NS)
+    accessor = source.find(".//c:accessor", NS)
+    if float_array is None or accessor is None or not float_array.text:
+        return
+    values = [float(v) for v in float_array.text.split()]
+    stride = int(accessor.get("stride", "2"))
+    offset = int(accessor.get("offset", "0"))
+    if stride < 1:
+        return
+    params = [p.get("name", "").upper() for p in accessor.findall("c:param", NS)]
+    s_slot = params.index("S") if "S" in params else 0
+    s_indices = list(range(offset + s_slot, len(values), stride))
+    if not s_indices:
+        return
+    pivot = min(values[idx] for idx in s_indices) + max(values[idx] for idx in s_indices)
+    for idx in s_indices:
+        values[idx] = pivot - values[idx]
+    float_array.text = " ".join(format_num(v) for v in values)
+
+
+def mirrored_geometry(geometry: ET.Element, new_id: str, *, flip_texture: bool = False) -> ET.Element:
     out = copy.deepcopy(geometry)
     old_id = out.get("id")
     out.set("id", new_id)
@@ -193,6 +229,11 @@ def mirrored_geometry(geometry: ET.Element, new_id: str) -> ET.Element:
         for _p in polygons.findall("c:p", NS):
             reverse_vertex_order(polygons)
             break
+    if flip_texture:
+        texcoords = texcoord_source_ids(mesh)
+        for source in mesh.findall("c:source", NS):
+            if source.get("id") in texcoords:
+                flip_texcoord_s_float_array(source)
 
     if old_id:
         for elem in out.iter():

@@ -61,6 +61,13 @@ def mode_label(mode: str) -> str:
 
 
 MODE_CYCLE_VALUES = [core.MODE_SKIP, core.MODE_MIRROR, core.MODE_MIRROR_STRUCTURAL, core.MODE_TRANSLATE]
+MODE_VALUES_BY_LABEL = {mode_label(mode): mode for mode in MODE_CYCLE_VALUES}
+MODE_HOTKEYS = {
+    "q": core.MODE_SKIP,
+    "w": core.MODE_MIRROR,
+    "e": core.MODE_MIRROR_STRUCTURAL,
+    "r": core.MODE_TRANSLATE,
+}
 
 BUILD_LABELS = {
     core.BUILD_OFF: "Off",
@@ -71,7 +78,7 @@ BUILD_LABELS = {
 
 # How long (in milliseconds) a part may sit on Mirror Structural before the
 # source-part prompt commits it. Tweak this value to change the timeout.
-STRUCTURAL_PROMPT_DELAY_MS = 1200
+STRUCTURAL_PROMPT_DELAY_MS = 300
 
 
 RECOMMEND_SIDE_PAIRS = (
@@ -102,26 +109,49 @@ RECOMMEND_TRANSLATE_PATTERNS = (
     r"pedalbox|pedal_box|padalbox",
     r"steer(?:ing)?_?wheel|steerwheel|(?:^|_)steer_[0-9]",
     r"paddle|signal_?stalk|wiper_?stalk",
+    r"shift_?light",
+    # Only the column TOP moves with the wheel (ignition/stalk details face
+    # the driver); column bodies and racks stay in the mirror pool
+    # (sunburst2 reference data).
+    r"steering_?column\w*top",
 )
 
 RECOMMEND_TRANSLATE_EXCLUDE_PATTERNS = (
-    r"footplate|(?:^|_)stand(?:_|$)|stand_plate",
+    # A pedalbox's own footplate moves with the pedals; standalone
+    # footplates/stands are cabin furniture and stay in the mirror pool.
+    r"(?<!box_)footplate|(?:^|_)stand(?:_|$)|stand_plate",
 )
 
+# Headliners and sunvisors deliberately do NOT appear here: they span the
+# cabin symmetrically on essentially every vehicle, so mirroring them only
+# generates mesh copies with no visual change (etk800 reference data).
 RECOMMEND_MIRROR_PATTERNS = (
     r"dash|dashboard|console",
     r"parking_?brake|park_?brake|pbrake|hand_?brake|(?:^|_)hb_",
     r"shifter|shift_?knob|(?:^|_)grp_shift",
-    r"radio|laptop|interior|headliner|sunvisor",
+    r"radio|laptop|interior",
     r"steering_?column|(?:^|_)column(?:_|$)",
     r"intmirror|grp_mirror|hazard|dash_key|(?:^|_)key(?:_|$)",
     r"extinguisher|footplate|(?:^|_)stand(?:_|$)|stand_plate|cable",
+)
+
+# Display screens get Mirror plus a texture flip so the image keeps its
+# left/right reading. "windscreen" must not match; "gauges_screen" is caught
+# by the translate patterns first.
+RECOMMEND_SCREEN_PATTERNS = (
+    r"(?<!wind)screen",
 )
 
 RECOMMEND_STRUCTURAL_PATTERNS = (
     r"door_?panel",
     r"(?:^|_)mirror(?:_|$)|mirror_?stalk",
     r"(?:^|_)(?:race_?)?seats?(?:_|$)|racing_?seat",
+)
+
+# Plural "seats" meshes are cabin-spanning benches (etk800_seats_R = rear
+# bench, where R means rear, not right): symmetric, nothing to mirror.
+RECOMMEND_UNPAIRED_MIRROR_EXCLUDE_PATTERNS = (
+    r"seats(?:_|$)",
 )
 
 
@@ -138,14 +168,25 @@ def recommendation_matches(text: str, patterns: tuple[str, ...]) -> bool:
 
 
 def recommendation_pair_candidate(object_id: str, candidates: set[str]) -> str | None:
-    lower_to_id = {candidate.lower(): candidate for candidate in candidates}
     lowered = object_id.lower()
+    lower_to_id = {candidate.lower(): candidate for candidate in candidates}
+    # "lhd"/"rhd" are handedness tokens, not side tokens: the "_l" inside
+    # "_lhd" must not pair bx_mirror_int_lhd with bx_mirror_int_rhd. Side
+    # tokens elsewhere in such names (bx_mirror_L_rhd) still pair normally.
+    hand_spans = [match.span() for match in re.finditer(r"[lr]hd", lowered)]
     for left, right in RECOMMEND_SIDE_PAIRS:
-        if left not in lowered:
-            continue
-        candidate = lowered.replace(left, right, 1)
-        if candidate in lower_to_id:
-            return lower_to_id[candidate]
+        start = 0
+        while True:
+            idx = lowered.find(left, start)
+            if idx < 0:
+                break
+            if any(idx < end and begin < idx + len(left) for begin, end in hand_spans):
+                start = idx + 1
+                continue
+            candidate = lowered[:idx] + right + lowered[idx + len(left) :]
+            if candidate in lower_to_id:
+                return lower_to_id[candidate]
+            break
     return None
 
 
@@ -158,6 +199,7 @@ def build_mode_recommendations(
     paired: set[str] = set()
     recommendations: list[dict[str, str]] = []
 
+    handled: set[str] = set()
     for object_id in available:
         if object_id in paired:
             continue
@@ -165,25 +207,55 @@ def build_mode_recommendations(
         if not recommendation_matches(text, RECOMMEND_STRUCTURAL_PATTERNS):
             continue
         source_id = recommendation_pair_candidate(object_id, candidate_set)
-        if source_id is None or source_id in paired:
-            continue
-        recommendations.append(
-            {
-                "kind": "pair",
-                "object_id": object_id,
-                "source_id": source_id,
-                "mode": core.MODE_MIRROR_STRUCTURAL,
-                "reason": "left/right name pair",
-            }
-        )
-        paired.add(object_id)
-        paired.add(source_id)
+        if source_id is not None and source_id not in paired:
+            recommendations.append(
+                {
+                    "kind": "pair",
+                    "object_id": object_id,
+                    "source_id": source_id,
+                    "mode": core.MODE_MIRROR_STRUCTURAL,
+                    "reason": "left/right name pair",
+                }
+            )
+            paired.add(object_id)
+            paired.add(source_id)
+        elif (
+            source_id is None
+            and not recommendation_matches(text, RECOMMEND_UNPAIRED_MIRROR_EXCLUDE_PATTERNS)
+            # Instrument-named parts that happen to carry a mirror/seat token
+            # (shiftlight_multi_led_mirror) belong to the translate rules below.
+            and not recommendation_matches(text, RECOMMEND_TRANSLATE_PATTERNS)
+        ):
+            # Seat/mirror-style hardware with no opposite-side counterpart is
+            # driver-only kit (racing seat bases, single wing mirrors): mirror
+            # it onto the other side.
+            recommendations.append(
+                {
+                    "kind": "single",
+                    "object_id": object_id,
+                    "source_id": "",
+                    "mode": core.MODE_MIRROR,
+                    "reason": "one-sided seat/mirror part",
+                }
+            )
+            handled.add(object_id)
 
     for object_id in available:
-        if object_id in paired:
+        if object_id in paired or object_id in handled:
             continue
         text = recommendation_text(context, object_id)
-        if recommendation_matches(text, RECOMMEND_TRANSLATE_PATTERNS) and not recommendation_matches(
+        obj = context.objects.get(object_id)
+        if obj is not None and core.steering_ref_score(object_id, obj) >= 15:
+            recommendations.append(
+                {
+                    "kind": "single",
+                    "object_id": object_id,
+                    "source_id": "",
+                    "mode": core.MODE_TRANSLATE,
+                    "reason": "steering wheel",
+                }
+            )
+        elif recommendation_matches(text, RECOMMEND_TRANSLATE_PATTERNS) and not recommendation_matches(
             text,
             RECOMMEND_TRANSLATE_EXCLUDE_PATTERNS,
         ):
@@ -194,6 +266,17 @@ def build_mode_recommendations(
                     "source_id": "",
                     "mode": core.MODE_TRANSLATE,
                     "reason": "driver control or instrument name",
+                }
+            )
+        elif recommendation_matches(text, RECOMMEND_SCREEN_PATTERNS):
+            recommendations.append(
+                {
+                    "kind": "single",
+                    "object_id": object_id,
+                    "source_id": "",
+                    "mode": core.MODE_MIRROR,
+                    "textureFlip": True,
+                    "reason": "display screen: mirror + flip texture",
                 }
             )
         elif recommendation_matches(text, RECOMMEND_MIRROR_PATTERNS):
@@ -240,6 +323,12 @@ def offset_display(mode: str, value: object, *, manual_delta: bool) -> str:
     return "Manual" if manual_delta else "Auto"
 
 
+def fliptex_display(mode: str, value: object) -> str:
+    if mode != core.MODE_MIRROR:
+        return "N/A"
+    return yn_label(value)
+
+
 def existing_initial_dir(path: object, fallback: Path) -> str:
     candidate = Path(str(path)) if path else fallback
     if candidate.is_file():
@@ -262,7 +351,7 @@ class HandDriveToolApp(tk.Tk):
         self.title("BeamXP - BeamNG Vehicle eXPort Services")
         self._set_app_icon()
         self.geometry("1480x840")
-        self.minsize(1160, 700)
+        self.minsize(480, 360)
 
         self.context: core.VehicleContext | None = None
         self.conversion: dict[str, object] = {}
@@ -344,8 +433,9 @@ class HandDriveToolApp(tk.Tk):
         self._build_ui()
         self.bind("<KeyPress-h>", self._toggle_selected_parts_visibility_shortcut)
         self.bind("<KeyPress-H>", self._toggle_selected_parts_visibility_shortcut)
-        self.bind("<KeyPress-space>", self._cycle_selected_part_mode_shortcut)
-        self.bind("<Shift-KeyPress-space>", lambda event: self._cycle_selected_part_mode_shortcut(event, -1))
+        for hotkey, hotkey_mode in MODE_HOTKEYS.items():
+            self.bind(f"<KeyPress-{hotkey}>", lambda event, m=hotkey_mode: self._set_selected_part_mode_shortcut(event, m))
+            self.bind(f"<KeyPress-{hotkey.upper()}>", lambda event, m=hotkey_mode: self._set_selected_part_mode_shortcut(event, m))
         self.bind_all("<Button-1>", self._clear_part_filter_focus_on_click, add="+")
         self._rebuild_model_combo()
         self.after_idle(self._maximize_on_start)
@@ -620,31 +710,64 @@ class HandDriveToolApp(tk.Tk):
 
         ttk.Label(top, textvariable=self.project_var).grid(row=1, column=0, columnspan=7, sticky="ew", pady=(6, 0))
 
-        main = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        main.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        # ttk.PanedWindow cannot change orientation after creation, so keep
+        # one paned window per orientation and move the two panes between
+        # them when the window aspect ratio flips (see _on_root_configure).
+        # The pane frames are children of the toplevel so both paned windows
+        # may manage them.
+        self.main_paned_h = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        self.main_paned_v = ttk.PanedWindow(self, orient=tk.VERTICAL)
+        self.main_orientation: str | None = None
 
-        left = ttk.Frame(main)
+        left = self.tables_pane = ttk.Frame(self)
         left.columnconfigure(0, weight=1)
         left.rowconfigure(1, weight=0)
         left.rowconfigure(3, weight=1)
-        # Keep the tables at their requested width and give spare horizontal
-        # space to the ModernGL preview. The sash remains user-adjustable.
-        main.add(left, weight=0)
 
-        right = ttk.Frame(main)
+        right = self.preview_pane = ttk.Frame(self)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
-        main.add(right, weight=1)
 
         self._build_variant_panel(left)
         self._build_part_panel(left)
         self._build_right_panel(right)
+
+        self._apply_main_orientation("landscape")
+        self.bind("<Configure>", self._on_root_configure, add="+")
 
         bottom = ttk.Frame(self, padding=(10, 4, 10, 8))
         bottom.grid(row=2, column=0, sticky="ew")
         bottom.columnconfigure(0, weight=1)
         ttk.Label(bottom, textvariable=self.detail_var).grid(row=0, column=0, sticky="w")
         ttk.Label(bottom, textvariable=self.status_var).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+    def _on_root_configure(self, event: tk.Event) -> None:
+        if event.widget is not self:
+            return
+        if event.width <= 1 or event.height <= 1:
+            return
+        self._apply_main_orientation("portrait" if event.height > event.width else "landscape")
+
+    def _apply_main_orientation(self, mode: str) -> None:
+        if mode == self.main_orientation:
+            return
+        self.main_orientation = mode
+        for paned in (self.main_paned_h, self.main_paned_v):
+            for pane in paned.panes():
+                paned.forget(pane)
+            paned.grid_remove()
+        if mode == "landscape":
+            paned = self.main_paned_h
+            # Keep the tables at their requested width and give spare
+            # horizontal space to the ModernGL preview. The sash remains
+            # user-adjustable.
+            paned.add(self.tables_pane, weight=0)
+            paned.add(self.preview_pane, weight=1)
+        else:
+            paned = self.main_paned_v
+            paned.add(self.tables_pane, weight=1)
+            paned.add(self.preview_pane, weight=1)
+        paned.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
 
     def _build_variant_panel(self, parent: ttk.Frame) -> None:
         header = ttk.Frame(parent)
@@ -755,13 +878,14 @@ class HandDriveToolApp(tk.Tk):
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
 
-        columns = ("visible", "solo", "active", "mode", "offset", "steering", "x", "y", "z")
+        columns = ("visible", "solo", "active", "mode", "offset", "fliptex", "steering", "x", "y", "z")
         self.part_tree = ttk.Treeview(frame, columns=columns, show=("tree", "headings"), selectmode="extended")
         self.part_tree.heading("#0", text="Part", anchor="w")
         self.part_tree.column("#0", width=250, minwidth=150, stretch=True, anchor="w")
         headings = {
             "mode": "Mode",
             "offset": "Offset X",
+            "fliptex": "Flip Tex",
             "steering": "Steering Ref",
             "visible": "Visible",
             "solo": "Solo",
@@ -773,6 +897,7 @@ class HandDriveToolApp(tk.Tk):
         widths = {
             "mode": 132,
             "offset": 82,
+            "fliptex": 74,
             "steering": 96,
             "visible": 70,
             "solo": 60,
@@ -792,7 +917,7 @@ class HandDriveToolApp(tk.Tk):
                 width=widths[col],
                 minwidth=50,
                 stretch=False,
-                anchor="center" if col in {"steering", "visible", "solo", "active"} else "w",
+                anchor="center" if col in {"fliptex", "steering", "visible", "solo", "active"} else "w",
             )
         self._register_tree_headings(self.part_tree, {"#0": "Part", **headings})
         yscroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=self.part_tree.yview)
@@ -804,12 +929,14 @@ class HandDriveToolApp(tk.Tk):
         self._configure_tree_rows(self.part_tree)
         self.part_tree.bind("<<TreeviewSelect>>", lambda _event: self._part_selection_changed())
         self.part_tree.bind("<Button-1>", self._part_click)
-        self.part_tree.bind("<Button-3>", self._part_right_click)
         self.part_tree.bind("<Motion>", self._part_motion)
         self.part_tree.bind("<Leave>", self._part_leave)
         self.part_tree.bind("<Double-1>", self._part_double_click)
-        self.part_tree.bind("<KeyPress-space>", self._cycle_selected_part_mode_shortcut)
-        self.part_tree.bind("<Shift-KeyPress-space>", lambda event: self._cycle_selected_part_mode_shortcut(event, -1))
+        self.part_tree.bind("<MouseWheel>", lambda _event: self._close_tree_combo_editor(), add="+")
+        self.part_tree.bind("<Shift-MouseWheel>", lambda _event: self._close_tree_combo_editor(), add="+")
+        self.part_tree.bind("<Button-4>", lambda _event: self._close_tree_combo_editor(), add="+")
+        self.part_tree.bind("<Button-5>", lambda _event: self._close_tree_combo_editor(), add="+")
+        self.part_tree.bind("<Configure>", lambda _event: self._close_tree_combo_editor(), add="+")
 
     def _build_right_panel(self, parent: ttk.Frame) -> None:
         parent.rowconfigure(0, weight=1)
@@ -1680,6 +1807,7 @@ class HandDriveToolApp(tk.Tk):
                     "mode": core.MODE_SKIP,
                     "mirrorSource": None,
                     "translateOffset": None,
+                    "textureFlip": False,
                     "steeringRef": False,
                     "viewerVisible": True,
                     "viewerSolo": False,
@@ -1713,6 +1841,7 @@ class HandDriveToolApp(tk.Tk):
                         settings.get("translateOffset"),
                         manual_delta=self.manual_delta_enabled.get(),
                     ),
+                    fliptex_display(mode, settings.get("textureFlip")),
                     yn_label(settings.get("steeringRef")),
                     fmt_float(obj.x),
                     fmt_float(obj.y),
@@ -1949,8 +2078,15 @@ class HandDriveToolApp(tk.Tk):
                     if mode == core.MODE_TRANSLATE
                     else "N/A"
                 )
+                flip_note = (
+                    ", texture flip on"
+                    if mode == core.MODE_MIRROR
+                    and isinstance(settings, dict)
+                    and settings.get("textureFlip")
+                    else ""
+                )
                 self.detail_var.set(
-                    f"{display_name}: {mode_label(mode)}, "
+                    f"{display_name}: {mode_label(mode)}{flip_note}, "
                     f"full id {object_id}, x {fmt_float(obj.x)}, offset {part_offset}, dae {obj.dae_path}"
                 )
                 return
@@ -2656,7 +2792,11 @@ class HandDriveToolApp(tk.Tk):
                 self._apply_structural_pair(object_id, source_id)
                 applied += 2
             else:
-                self._apply_single_part_mode(object_id, mode)
+                self._apply_single_part_mode(
+                    object_id,
+                    mode,
+                    texture_flip=recommendation.get("textureFlip"),
+                )
                 applied += 1
 
         self._refresh_parts()
@@ -2672,13 +2812,15 @@ class HandDriveToolApp(tk.Tk):
         self.recommendation_rows = {}
         self.status_var.set(f"Applied {len(selected_rows)} recommendation(s) to {applied} part setting(s)")
 
-    def _apply_single_part_mode(self, object_id: str, mode: str) -> None:
+    def _apply_single_part_mode(self, object_id: str, mode: str, *, texture_flip: bool | None = None) -> None:
         settings = self._part_settings(object_id)
         if settings.get("mode") == core.MODE_MIRROR_STRUCTURAL:
             self._clear_structural_pair(object_id)
             settings = self._part_settings(object_id)
         settings["mode"] = mode
         settings["mirrorSource"] = None
+        if texture_flip is not None:
+            settings["textureFlip"] = bool(texture_flip)
 
     def _apply_structural_pair(self, object_id: str, source_id: str) -> None:
         self._clear_structural_pair(object_id)
@@ -2691,6 +2833,7 @@ class HandDriveToolApp(tk.Tk):
         source_settings["mirrorSource"] = object_id
 
     def _part_click(self, event: tk.Event) -> None:
+        self._close_tree_combo_editor()
         if not self._tree_body_click(self.part_tree, event):
             return None
         item = self.part_tree.identify_row(event.y)
@@ -2707,7 +2850,15 @@ class HandDriveToolApp(tk.Tk):
         if name == "mode":
             self.part_tree.focus(item)
             self.part_tree.selection_set(item)
-            self._cycle_part_mode(item, 1)
+            current = mode_label(str(self._get_part_setting(item, "mode", core.MODE_SKIP)))
+            self._edit_tree_combo(
+                self.part_tree,
+                item,
+                column,
+                [mode_label(mode) for mode in MODE_CYCLE_VALUES],
+                current,
+                lambda value: self._set_part_mode_from_label(item, value),
+            )
             return "break"
         if name == "offset":
             if self._get_part_setting(item, "mode", core.MODE_SKIP) != core.MODE_TRANSLATE:
@@ -2721,24 +2872,22 @@ class HandDriveToolApp(tk.Tk):
                 lambda value: self._set_part_offset(item, value),
             )
             return "break"
+        if name == "fliptex":
+            mode = str(self._get_part_setting(item, "mode", core.MODE_SKIP))
+            if mode != core.MODE_MIRROR:
+                self.status_var.set("Flip Tex only applies to Mirror Aesthetic")
+                return "break"
+            self._toggle_part_bool(item, "textureFlip")
+            flipped = bool(self._get_part_setting(item, "textureFlip", False))
+            self.status_var.set(
+                f"{self._part_display_name(item)}: texture flip "
+                + ("on (un-mirrors the image, e.g. nav screens)" if flipped else "off")
+            )
+            return "break"
         if name == "steering":
             self._set_single_steering_ref(item)
             return "break"
         # "active" is read-only, and #0/coords fall through to default row select.
-        return None
-
-    def _part_right_click(self, event: tk.Event) -> None:
-        if not self._tree_body_click(self.part_tree, event):
-            return None
-        item = self.part_tree.identify_row(event.y)
-        column = self.part_tree.identify_column(event.x)
-        if not item:
-            return None
-        if self._tree_column_name(self.part_tree, column) == "mode":
-            self.part_tree.focus(item)
-            self.part_tree.selection_set(item)
-            self._cycle_part_mode(item, -1)
-            return "break"
         return None
 
     def _part_motion(self, event: tk.Event) -> None:
@@ -2775,14 +2924,14 @@ class HandDriveToolApp(tk.Tk):
                 lambda value: self._set_part_offset(item, value),
             )
 
-    def _cycle_part_mode(self, object_id: str, direction: int) -> None:
-        current = str(self._get_part_setting(object_id, "mode", core.MODE_SKIP))
-        try:
-            index = MODE_CYCLE_VALUES.index(current)
-        except ValueError:
-            index = 0
-        next_mode = MODE_CYCLE_VALUES[(index + direction) % len(MODE_CYCLE_VALUES)]
-        self._set_part_mode(object_id, next_mode)
+    def _set_part_mode_from_label(self, object_id: str, label: str) -> None:
+        mode = MODE_VALUES_BY_LABEL.get(label)
+        if mode is None:
+            return
+        self._set_part_mode(object_id, mode)
+        if mode != core.MODE_MIRROR_STRUCTURAL:
+            # Mirror Structural sets its own "choose a source" status message.
+            self.status_var.set(f"{self._part_display_name(object_id)}: {mode_label(mode)}")
 
     def _cancel_structural_prompt(self, object_id: str | None = None) -> None:
         if object_id is not None and self.structural_prompt_part_id != object_id:
@@ -3124,8 +3273,10 @@ class HandDriveToolApp(tk.Tk):
             self.status_var.set(f"Toggled visibility for {len(selected)} selected part(s)")
         return "break"
 
-    def _cycle_selected_part_mode_shortcut(self, _event: tk.Event, direction: int = 1) -> str | None:
+    def _set_selected_part_mode_shortcut(self, _event: tk.Event, mode: str) -> str | None:
         focus = self.focus_get()
+        # Only typing targets swallow the hotkeys; buttons and other focusable
+        # widgets don't react to letter keys, so mode setting stays live.
         if focus is not None and focus.winfo_class() in {
             "Entry",
             "TEntry",
@@ -3134,31 +3285,38 @@ class HandDriveToolApp(tk.Tk):
             "TCombobox",
             "Spinbox",
             "TSpinbox",
-            "Button",
-            "TButton",
-            "Checkbutton",
-            "TCheckbutton",
-            "Radiobutton",
-            "TRadiobutton",
         }:
             return None
         if self.context is None:
             return None
-        item = self.part_tree.focus()
-        if not item or not self.part_tree.exists(item) or item not in self.context.objects:
-            selected = [
-                object_id
-                for object_id in self.part_tree.selection()
-                if self.part_tree.exists(object_id) and object_id in self.context.objects
-            ]
-            if len(selected) != 1:
-                return None
-            item = selected[0]
-        self._cycle_part_mode(item, direction)
-        mode = str(self._get_part_setting(item, "mode", core.MODE_SKIP))
-        if mode != core.MODE_MIRROR_STRUCTURAL:
-            # Mirror Structural sets its own "choose a source" status message.
-            self.status_var.set(f"{self._part_display_name(item)}: {mode_label(mode)}")
+        targets = [
+            object_id
+            for object_id in self.part_tree.selection()
+            if self.part_tree.exists(object_id) and object_id in self.context.objects
+        ]
+        if not targets:
+            item = self.part_tree.focus()
+            if item and self.part_tree.exists(item) and item in self.context.objects:
+                targets = [item]
+        if not targets:
+            return None
+        if mode == core.MODE_MIRROR_STRUCTURAL:
+            # The source-pair prompt is a per-part modal; only sensible one at a time.
+            if len(targets) != 1:
+                self.status_var.set("Select a single part to set Mirror Structural (it needs a source pair)")
+                return "break"
+            self._set_part_mode(targets[0], mode)
+            return "break"
+        for object_id in targets:
+            self._cancel_structural_prompt(object_id)
+            self._apply_single_part_mode(object_id, mode)
+        self._refresh_parts()
+        self._refresh_delta_label()
+        self._update_detail()
+        if len(targets) == 1:
+            self.status_var.set(f"{self._part_display_name(targets[0])}: {mode_label(mode)}")
+        else:
+            self.status_var.set(f"Set {mode_label(mode)} on {len(targets)} part(s)")
         return "break"
 
     def _part_settings(self, object_id: str) -> dict[str, object]:
@@ -3169,6 +3327,7 @@ class HandDriveToolApp(tk.Tk):
                 "mode": core.MODE_SKIP,
                 "mirrorSource": None,
                 "translateOffset": None,
+                "textureFlip": False,
                 "steeringRef": False,
                 "viewerVisible": True,
                 "viewerSolo": False,
@@ -3262,6 +3421,9 @@ class HandDriveToolApp(tk.Tk):
         selection fires <<TreeviewSelect>> which refreshes the highlight+detail."""
         if self.context is None:
             return
+        # A viewer click means the user is working with parts: pull keyboard
+        # focus onto the table so the mode/visibility hotkeys apply directly.
+        self.part_tree.focus_set()
         if not object_id:
             if self.part_tree.selection():
                 self.part_tree.selection_set([])  # empty click -> deselect

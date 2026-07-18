@@ -2,7 +2,7 @@
 
 Convert any BeamNG.drive vehicle — vanilla or mod — between left-hand drive and right-hand drive, and generate custom licence plates.
 
-**[Download BeamXP 0.2.0-alpha](https://github.com/Telestang/BeamXP/raw/main/release/BeamXP-0.2.0-alpha-windows.zip)** — extract it anywhere and run the exe.
+**[Download BeamXP 0.2.1-alpha](https://github.com/Telestang/BeamXP/raw/main/release/BeamXP-0.2.1-alpha-windows.zip)** — extract it anywhere and run the exe.
 
 *BeamXP was previously named BeamHDC (BeamNG Hand Drive Converter).*
 
@@ -13,6 +13,12 @@ The aim is practical gameplay use: convert a car into the driver's preferred han
 | Stock LHD | Converted RHD |
 | --- | --- |
 | ![Stock LHD interior](Screenshots/sunburst2_lhd.jpg) | ![Converted RHD interior](Screenshots/sunburst2_rhd.jpg) |
+
+## Demo
+
+All 39 vanilla ETK 800-Series trims converted to RHD in 4 minutes 30 seconds — under 7 seconds per trim. Click to watch:
+
+<a href="https://www.youtube.com/shorts/5jT2sWg6tlI"><img src="https://img.youtube.com/vi/5jT2sWg6tlI/oardefault.jpg" width="300" alt="BeamXP demo: converting all 39 ETK 800-Series trims to RHD in 4 minutes 30 seconds"></a>
 
 ## Status
 
@@ -28,9 +34,11 @@ The tool is new. It has been working well in my own testing, but there may be is
 - Selects front and rear plate meshes independently from BeamNG's shared vanilla physical-plate library; each trim's stock part is labelled `(default)` and `None` is available per side.
 - Shows a live in-app 3D preview of the conversion that updates as you work.
 - Builds one output mod zip containing all selected XP trim outputs and installs it into your BeamNG mods folder.
-- Lets each part be set to `Skip`, `Translate`, `Mirror Aesthetic`, or `Mirror Structural`.
+- Lets each part be set to `Skip`, `Translate`, `Mirror Aesthetic`, or `Mirror Structural` — via an in-table dropdown or the `Q`/`W`/`E`/`R` hotkeys.
+- Recommends part modes automatically (`Recommend Modes`): left/right structural pairs, driver controls, screens, and asymmetric interior parts, with rules tuned against hand-verified conversions.
+- Un-mirrors the texture on mirrored display screens (`Flip Tex`) so satnav and infotainment content keeps its left/right reading.
 - Detects steering side where possible.
-- Estimates the translate distance from a steering-wheel reference part.
+- Estimates the translate distance from an auto-detected steering-wheel reference part; detection re-runs on load whenever a project has no reference set.
 - Allows per-part translate offsets.
 - Converts internal camera positions automatically.
 - Filters the part list to parts used by the selected variants.
@@ -39,11 +47,11 @@ The tool is new. It has been working well in my own testing, but there may be is
 
 ## Quick Start
 
-1. [Download the release zip](https://github.com/Telestang/BeamXP/raw/main/release/BeamXP-0.2.0-alpha-windows.zip), extract it, and run the exe (or run from source — see Requirements).
+1. [Download the release zip](https://github.com/Telestang/BeamXP/raw/main/release/BeamXP-0.2.1-alpha-windows.zip), extract it, and run the exe (or run from source — see Requirements).
 2. Select a source BeamNG vehicle `.zip`.
 3. If prompted, choose the vehicle model ID.
 4. Select the variants/trims you want to convert.
-5. Set part modes:
+5. Click `Recommend Modes` to auto-fill the common cases, then set the rest by hand — click a part's `Mode` cell for a dropdown, or select part(s) and press `Q` (Skip), `W` (Mirror Aesthetic), `E` (Mirror Structural), or `R` (Translate):
    - `Translate` for steering wheels, pedals, gauges, stalks, screens, and other driver-specific interior items.
    - `Mirror Aesthetic` for parts that only need visual mirroring.
    - `Mirror Structural` for paired parts where you want the opposite-side mesh on the existing structure, such as door cards or mirrors.
@@ -133,6 +141,8 @@ For fine offset tuning, select the part that needs adjustment in a Blender previ
 
 ## Part Modes
 
+`Recommend Modes` scans the used-parts list and proposes a mode per part from its name: left/right pairs (door cards, mirrors, seats) become `Mirror Structural`, driver controls and instruments become `Translate`, asymmetric interior parts become `Mirror Aesthetic`, display screens get `Mirror Aesthetic` with `Flip Tex`, and one-sided seat or mirror hardware with no opposite counterpart is mirrored across. The rules are tuned against hand-verified conversions — the entire vanilla ETK 800-Series recommends correctly with no manual fixes. Review the list and apply the rows you agree with; nothing is changed until you apply.
+
 ### Translate
 
 Moves the visual mesh laterally without mirroring it. Use this for parts that should stay oriented the same relative to the driver:
@@ -155,6 +165,10 @@ Where mirroring creates a significant visual asymmetry — a vehicle with only a
 ### Mirror Structural
 
 Swaps an opposite-side mirrored mesh onto the existing source-side JBeam structure. This is useful for paired parts like door cards or mirrors where you want the visual side to change but still deform with the existing door/mirror structure.
+
+### Flip Tex
+
+Mirroring a mesh also mirror-images its texture. That is correct for most trim, but wrong for parts that display readable content — a satnav/infotainment screen, badges, decals with text. Toggle `Flip Tex` on a `Mirror Aesthetic` part to reflect its texture coordinates horizontally along with the geometry, so the image keeps its normal left/right reading. The reflection happens within the part's own UV footprint, so it keeps sampling the same region of a shared texture atlas. `Mirror Structural` deliberately does not offer it: that mode swaps in the opposite-side mesh, which already carries its own correct texture mapping. `Recommend Modes` proposes it automatically for display screens.
 
 ## Licence Plates
 

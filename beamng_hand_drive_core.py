@@ -70,6 +70,7 @@ PREVIEW_FAR_LIMIT = 100.0
 NUMBER_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 STEERING_NAME_EXCLUDES = (
     "airbag",
+    "box",
     "button",
     "buttons",
     "cowl",
@@ -2237,7 +2238,7 @@ def source_preview_path(source_zip: Path, vehicle_path: str, config_name: str) -
 # offsets move inward from that corner. The sticker keeps its own aspect ratio.
 XP_STICKER_ANCHOR = "top_left"  # top_left, top_right, bottom_left, bottom_right
 XP_STICKER_ORIGIN_X_FRACTION = 0.02
-XP_STICKER_ORIGIN_Y_FRACTION = 0.72
+XP_STICKER_ORIGIN_Y_FRACTION = 0.65
 # 0.25 tuned against the 512px-wide HDC sticker; the XP sticker is 435px wide
 # at the same height, so 0.25 * 435/512 keeps the on-screen badge size equal.
 XP_STICKER_WIDTH_FRACTION = 0.2124
@@ -2768,7 +2769,17 @@ def steering_ref_score(object_id: str, obj: DaeObject) -> int:
 
 
 def is_default_steering_ref(object_id: str, obj: DaeObject) -> bool:
-    return abs(obj.x) > 0.05 and steering_ref_score(object_id, obj) >= 25
+    # 15 = "steer" in the name + off-center placement with no excluded token;
+    # vehicles like the etk800 name their wheels plain "steer"/"steer_01a"
+    # without a "wheel" token, so demanding the wheel bonus finds nothing.
+    return abs(obj.x) > 0.05 and steering_ref_score(object_id, obj) >= 15
+
+
+def vehicle_prefix_rank(context: VehicleContext, object_id: str) -> int:
+    """Vehicle-named meshes (etk800_steer) outrank shared-library wheels
+    (steer_01a, ...): the prefixed mesh is the vehicle's own default fitment
+    while the rest are optional customisation parts."""
+    return 0 if object_id.lower().startswith(f"{context.vehicle_id.lower()}_") else 1
 
 
 def keep_single_steering_ref(context: VehicleContext, parts: dict[str, object]) -> None:
@@ -2784,11 +2795,17 @@ def keep_single_steering_ref(context: VehicleContext, parts: dict[str, object]) 
     if len(refs) <= 1:
         return
 
-    def rank(object_id: str) -> tuple[int, int, float, str]:
+    def rank(object_id: str) -> tuple[int, int, int, float, str]:
         obj = context.objects.get(object_id)
         if obj is None:
-            return (1, 0, 0.0, object_id)
-        return (0, -steering_ref_score(object_id, obj), -abs(obj.x), object_id)
+            return (1, 0, 0, 0.0, object_id)
+        return (
+            0,
+            -steering_ref_score(object_id, obj),
+            vehicle_prefix_rank(context, object_id),
+            -abs(obj.x),
+            object_id,
+        )
 
     best = min(refs, key=rank)
     for object_id in refs:
@@ -2796,12 +2813,28 @@ def keep_single_steering_ref(context: VehicleContext, parts: dict[str, object]) 
             parts[object_id]["steeringRef"] = False
 
 
+def ensure_default_steering_ref(context: VehicleContext, parts: dict[str, object]) -> None:
+    """Re-run steering-ref auto-detection when no part carries the flag, so a
+    save written without one (older tool versions, cleared by hand) recovers
+    the default on load instead of silencing detection forever."""
+    for settings in parts.values():
+        if isinstance(settings, dict) and settings.get("steeringRef"):
+            return
+    for object_id, settings in parts.items():
+        if not isinstance(settings, dict):
+            continue
+        obj = context.objects.get(object_id)
+        if obj is not None and is_default_steering_ref(object_id, obj):
+            settings["steeringRef"] = True
+    keep_single_steering_ref(context, parts)
+
+
 def likely_steering_ref_ids(
     context: VehicleContext,
     used_meshes: set[str] | None = None,
 ) -> list[str]:
     candidates = used_meshes if used_meshes is not None else set(context.objects)
-    scored: list[tuple[int, float, str]] = []
+    scored: list[tuple[int, int, float, str]] = []
     for object_id in candidates:
         obj = context.objects.get(object_id)
         if obj is None:
@@ -2810,9 +2843,9 @@ def likely_steering_ref_ids(
             continue
         score = steering_ref_score(object_id, obj)
         if score >= 15:
-            scored.append((score, abs(obj.x), object_id))
-    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
-    return [object_id for _score, _abs_x, object_id in scored]
+            scored.append((score, vehicle_prefix_rank(context, object_id), abs(obj.x), object_id))
+    scored.sort(key=lambda item: (-item[0], item[1], -item[2], item[3]))
+    return [object_id for _score, _prefix, _abs_x, object_id in scored]
 
 
 def estimated_vehicle_center_x(
@@ -2997,6 +3030,7 @@ def default_part_settings(context: VehicleContext) -> dict[str, dict[str, object
             "mode": MODE_SKIP,
             "mirrorSource": None,
             "translateOffset": None,
+            "textureFlip": False,
             "steeringRef": is_default_steering_ref(object_id, obj),
             "viewerVisible": True,
             "viewerSolo": False,
@@ -3136,6 +3170,7 @@ def merge_with_current_inventory(context: VehicleContext, data: dict[str, object
                             "mode",
                             "mirrorSource",
                             "translateOffset",
+                            "textureFlip",
                             "steeringRef",
                             "viewerVisible",
                             "viewerSolo",
@@ -3145,6 +3180,9 @@ def merge_with_current_inventory(context: VehicleContext, data: dict[str, object
                 )
         # Old saves written before single-ref enforcement may carry several.
         keep_single_steering_ref(context, merged["parts"])
+    # A save without any ref (older tool, different detection rules) must not
+    # pin detection off forever: re-run it whenever the merge ends up empty.
+    ensure_default_steering_ref(context, merged["parts"])
 
     old_delta = data.get("delta", {})
     if isinstance(old_delta, dict):
@@ -3225,6 +3263,7 @@ def import_matching_conversion(
                             "mode",
                             "mirrorSource",
                             "translateOffset",
+                            "textureFlip",
                             "steeringRef",
                             "viewerVisible",
                             "viewerSolo",
@@ -3236,6 +3275,7 @@ def import_matching_conversion(
             else:
                 counts["partSkipped"] += 1
         keep_single_steering_ref(context, out["parts"])
+    ensure_default_steering_ref(context, out["parts"])
     if isinstance(imported.get("plate"), dict):
         out["plate"] = plate_generator.normalized_plate_binding(imported["plate"])
     return out, counts
@@ -3602,6 +3642,27 @@ def active_part_modes(conversion: dict[str, object]) -> dict[str, str]:
         if mode in MODE_CHOICES and mode != MODE_SKIP:
             modes[str(object_id)] = mode
     return modes
+
+
+def texture_flip_mesh_ids(
+    conversion: dict[str, object],
+    object_modes: dict[str, str],
+) -> set[str]:
+    """Mirrored parts whose texture must keep its left/right reading (nav
+    screens, decals with text): their DAE copies get the TEXCOORD S axis
+    reflected alongside the geometric mirror. Mirror Aesthetic only —
+    Mirror Structural swaps in an opposite-side mesh that already carries
+    its own correct mapping."""
+    parts = conversion.get("parts", {})
+    if not isinstance(parts, dict):
+        return set()
+    return {
+        object_id
+        for object_id, mode in object_modes.items()
+        if mode == MODE_MIRROR
+        and isinstance(parts.get(object_id), dict)
+        and bool(parts[object_id].get("textureFlip"))
+    }
 
 
 def structural_mirror_source_for_settings(
@@ -4475,7 +4536,9 @@ def generate_daes(
     translated_flexbody_meshes: set[str],
     jbeam_positioned_flexbodies: set[str],
     baked_shared_specs: list[BakedMeshSpec],
+    texture_flip_ids: set[str] | None = None,
 ) -> list[Path]:
+    texture_flip_ids = texture_flip_ids or set()
     generated: list[Path] = []
     objects_by_dae: dict[tuple[Path, str], list[tuple[str, str]]] = {}
     for object_id in object_modes:
@@ -4572,7 +4635,11 @@ def generate_daes(
                     new_geom_id = safe_id(f"{old_geom_id}{suffix}_{object_id}")
                     if new_geom_id not in generated_geometry:
                         if mode in {MODE_MIRROR, MODE_MIRROR_STRUCTURAL}:
-                            generated_geometry[new_geom_id] = transform_helpers.mirrored_geometry(old_geom, new_geom_id)
+                            generated_geometry[new_geom_id] = transform_helpers.mirrored_geometry(
+                                old_geom,
+                                new_geom_id,
+                                flip_texture=object_id in texture_flip_ids,
+                            )
                         elif (
                             mode == MODE_TRANSLATE
                             and object_id in translated_flexbody_meshes
@@ -4622,7 +4689,11 @@ def generate_daes(
                 new_geom_id = safe_id(f"{old_geom_id}_{spec.output_mesh}")
                 if new_geom_id not in generated_geometry:
                     if spec.mode in {MODE_MIRROR, MODE_MIRROR_STRUCTURAL}:
-                        generated_geometry[new_geom_id] = transform_helpers.mirrored_geometry(old_geom, new_geom_id)
+                        generated_geometry[new_geom_id] = transform_helpers.mirrored_geometry(
+                            old_geom,
+                            new_geom_id,
+                            flip_texture=spec.configured_mesh in texture_flip_ids,
+                        )
                     else:
                         generated_geometry[new_geom_id] = transform_helpers.copied_geometry(old_geom, new_geom_id)
                 inst.set("url", f"#{new_geom_id}")
@@ -5366,7 +5437,7 @@ def write_mod_info(root: Path, context: VehicleContext) -> None:
     source_name = conversion_source_name(context)
     info = {
         "name": f"{context.vehicle_id} BeamXP Conversion",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "authors": source_name,
         "description": (
             f"Generated BeamXP handedness and/or plate configuration overlay for {context.vehicle_id}. "
@@ -5470,6 +5541,7 @@ def build_batch(
     structural_prop_meshes: set[str] = set()
     translated_flexbody_meshes: set[str] = set()
     translate_magnitudes: dict[str, float] = {}
+    texture_flip_ids: set[str] = set()
     if variant_targets:
         object_modes = active_part_modes(conversion)
         if not object_modes:
@@ -5489,6 +5561,7 @@ def build_batch(
             selected_configs=selected_configs,
         )
         structural_sources = structural_mirror_sources(context, conversion, object_modes)
+        texture_flip_ids = texture_flip_mesh_ids(conversion, object_modes)
         node_mirror_map = build_node_mirror_map(context.node_positions)
         translated_prop_meshes = {
             mesh for mesh, mode in object_modes.items() if mode == MODE_TRANSLATE and mesh in prop_meshes
@@ -5555,6 +5628,7 @@ def build_batch(
             translated_flexbody_meshes,
             context.jbeam_positioned_flexbodies,
             baked_shared_specs,
+            texture_flip_ids,
         )
     generated_configs.extend(write_original_plate_configs(
         context,
@@ -5590,6 +5664,7 @@ def build_batch(
         "deltaMagnitude": delta_magnitude(context, conversion),
         "translateMagnitudes": translate_magnitudes,
         "mirroredPropMeshes": sorted(mirrored_prop_meshes),
+        "textureFlipMeshes": sorted(texture_flip_ids),
         "structuralMirrorSources": structural_sources,
         "structuralPropMeshes": sorted(structural_prop_meshes),
         "bakedSharedMeshCount": len(baked_shared_specs),
