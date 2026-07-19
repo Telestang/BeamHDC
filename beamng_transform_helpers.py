@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import re
+from functools import lru_cache
 from xml.etree import ElementTree as ET
 
 
@@ -377,9 +378,12 @@ def find_matching(text: str, open_idx: int, open_char: str, close_char: str) -> 
     line_comment = False
     block_comment = False
     idx = open_idx
-    while idx < len(text):
+    # length is hoisted: this loop runs per character over hundreds of MB of
+    # jbeam across a cold load, and len() in the condition is ~40% overhead.
+    length = len(text)
+    while idx < length:
         ch = text[idx]
-        nxt = text[idx + 1] if idx + 1 < len(text) else ""
+        nxt = text[idx + 1] if idx + 1 < length else ""
         if line_comment:
             if ch in "\r\n":
                 line_comment = False
@@ -423,16 +427,24 @@ def find_matching(text: str, open_idx: int, open_char: str, close_char: str) -> 
     raise ValueError(f"Unclosed {open_char}{close_char} block")
 
 
+@lru_cache(maxsize=512)
 def mask_comments_preserve_offsets(text: str) -> str:
+    """Blank out comments while keeping every offset intact.
+
+    Cached: callers re-mask the same part bodies repeatedly (extract_named_array
+    and extract_keyed_object each mask the whole text to locate one key), and
+    roughly a third of calls during a cold load are exact repeats.
+    """
     out = list(text)
     in_string = False
     escape = False
     line_comment = False
     block_comment = False
     idx = 0
-    while idx < len(text):
+    length = len(text)
+    while idx < length:
         ch = text[idx]
-        nxt = text[idx + 1] if idx + 1 < len(text) else ""
+        nxt = text[idx + 1] if idx + 1 < length else ""
         if line_comment:
             if ch in "\r\n":
                 line_comment = False
@@ -480,7 +492,9 @@ def mask_comments_preserve_offsets(text: str) -> str:
 def extract_keyed_object(text: str, key: str) -> str | None:
     if f'"{key}"' not in text:
         return None
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*\{{')
+    # [\s,]* tolerates the stray comma stock jbeam ships between the colon
+    # and the brace ("key":, {...}); the game's lenient parser accepts it.
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:[\s,]*\{{')
     masked = mask_comments_preserve_offsets(text)
     match = pattern.search(masked)
     if match is None:
@@ -493,7 +507,7 @@ def extract_keyed_object(text: str, key: str) -> str | None:
 def extract_named_array(text: str, key: str) -> str | None:
     if f'"{key}"' not in text:
         return None
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*\[')
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:[\s,]*\[')
     masked = mask_comments_preserve_offsets(text)
     match = pattern.search(masked)
     if match is None:
@@ -540,7 +554,7 @@ def extract_part_slot_types(part_body: str) -> list[str]:
 
 
 def replace_array_region(text: str, key: str, transform) -> str:
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*\[')
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:[\s,]*\[')
     match = pattern.search(text)
     if match is None:
         return text

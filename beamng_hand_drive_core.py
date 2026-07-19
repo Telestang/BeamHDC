@@ -464,15 +464,30 @@ def referenced_mesh_names(part_body_index: dict[str, tuple[str, str]]) -> set[st
     return meshes
 
 
-def combined_token_regex(tokens: Iterable[str]) -> re.Pattern[bytes] | None:
-    encoded = sorted(
-        {token.encode("utf-8") for token in tokens if token and len(token) >= 2},
-        key=len,
-        reverse=True,
-    )
-    if not encoded:
-        return None
-    return re.compile(b"|".join(re.escape(token) for token in encoded))
+DAE_ALIAS_ATTR_RE = re.compile(rb'(?:id|name)="([^"]*)"')
+
+
+def dae_alias_candidates(data: bytes) -> set[str]:
+    """Every id/name attribute value in a raw DAE, plus stripped forms.
+
+    A superset of what dae_node_aliases can key an object by, so using it to
+    skip files is safe: it can only ever over-select. Matching on attributes
+    rather than searching for each wanted mesh name matters a great deal --
+    a combined ``mesh1|mesh2|...`` regex over a 680 MB common.zip is O(bytes
+    x alternatives) in Python's re (no Aho-Corasick) and measured 211s on
+    pickup, versus 0.4s for one attribute pass plus a set intersection.
+    """
+    names: set[str] = set()
+    for raw in DAE_ALIAS_ATTR_RE.findall(data):
+        try:
+            value = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        names.add(value)
+        stripped = value.strip()
+        if stripped:
+            names.add(stripped)
+    return names
 
 
 def load_common_dae_objects(
@@ -480,15 +495,13 @@ def load_common_dae_objects(
     wanted_meshes: set[str],
     existing_objects: dict[str, DaeObject],
 ) -> tuple[dict[str, DaeObject], dict[str, dict[str, object]], list[str]]:
-    missing_meshes = wanted_meshes - set(existing_objects)
-    token_regex = combined_token_regex(missing_meshes)
-    if token_regex is None:
+    still_missing = wanted_meshes - set(existing_objects)
+    if not still_missing:
         return {}, {}, []
 
     found_objects: dict[str, DaeObject] = {}
     found_previews: dict[str, dict[str, object]] = {}
     found_paths: set[str] = set()
-    still_missing = set(missing_meshes)
 
     for candidate_zip in common_zip_candidates(source_zip):
         if not still_missing:
@@ -496,39 +509,46 @@ def load_common_dae_objects(
         paths = common_dae_paths(candidate_zip)
         if not paths:
             continue
-        for dae_path in paths:
-            if not still_missing:
-                break
-            try:
-                with zipfile.ZipFile(candidate_zip) as zf:
+        try:
+            zf = zipfile.ZipFile(candidate_zip)
+        except Exception:
+            continue
+        # One handle for the whole zip: reopening per DAE re-reads the
+        # central directory of a multi-hundred-MB archive every time.
+        with zf:
+            for dae_path in paths:
+                if not still_missing:
+                    break
+                try:
                     data = zf.read(dae_path)
-            except Exception:
-                continue
-            if not token_regex.search(data):
-                continue
+                except Exception:
+                    continue
+                if still_missing.isdisjoint(dae_alias_candidates(data)):
+                    continue
 
-            try:
-                file_objects = list_dae_objects_for_file(candidate_zip, dae_path)
-            except Exception:
-                continue
-            matched_ids = sorted(object_id for object_id in file_objects if object_id in still_missing)
-            if not matched_ids:
-                continue
+                try:
+                    tree = ET.ElementTree(ET.fromstring(data))
+                    file_objects = dae_objects_from_tree(
+                        tree, dae_path, dae_source_zip=candidate_zip
+                    )
+                except Exception:
+                    continue
+                matched_ids = sorted(
+                    object_id for object_id in file_objects if object_id in still_missing
+                )
+                if not matched_ids:
+                    continue
 
-            try:
-                file_previews = preview_data_for_file(candidate_zip, dae_path)
-            except Exception:
-                file_previews = {}
-            for object_id in matched_ids:
-                found_objects.setdefault(object_id, file_objects[object_id])
-                if object_id in file_previews:
-                    found_previews.setdefault(object_id, file_previews[object_id])
-                still_missing.discard(object_id)
-            found_paths.add(dae_path)
-
-        token_regex = combined_token_regex(still_missing)
-        if token_regex is None:
-            break
+                try:
+                    file_previews = preview_data_from_tree(tree)
+                except Exception:
+                    file_previews = {}
+                for object_id in matched_ids:
+                    found_objects.setdefault(object_id, file_objects[object_id])
+                    if object_id in file_previews:
+                        found_previews.setdefault(object_id, file_previews[object_id])
+                    still_missing.discard(object_id)
+                found_paths.add(dae_path)
 
     return found_objects, found_previews, sorted(found_paths)
 
@@ -542,7 +562,21 @@ def preview_data_for_file(
     dae_path: str,
     max_points_per_object: int = 350,
 ) -> dict[str, dict[str, object]]:
-    tree = parse_dae(source_zip, dae_path)
+    return preview_data_from_tree(
+        parse_dae(source_zip, dae_path),
+        max_points_per_object=max_points_per_object,
+    )
+
+
+def preview_data_from_tree(
+    tree: ET.ElementTree,
+    max_points_per_object: int = 350,
+) -> dict[str, dict[str, object]]:
+    """Preview payload from an already-parsed DAE.
+
+    Split out so callers that also need dae_objects_from_tree can parse the
+    file once instead of once per helper; a common DAE is tens of MB of XML.
+    """
     root = tree.getroot()
     library_geometries = root.find("c:library_geometries", NS)
     if library_geometries is None:
@@ -726,7 +760,7 @@ def slot_demand_types(part_body: str) -> set[str]:
     demanded: set[str] = set()
     slots = transform_helpers.extract_named_array(part_body, "slots")
     if slots:
-        for row in iter_top_level_rows(slots):
+        for row in iter_active_top_level_rows(slots):
             values = split_top_level_values(row)
             if len(values) < 2:
                 continue
@@ -735,7 +769,7 @@ def slot_demand_types(part_body: str) -> set[str]:
                 demanded.add(slot_type)
     slots2 = transform_helpers.extract_named_array(part_body, "slots2")
     if slots2:
-        for row in iter_top_level_rows(slots2):
+        for row in iter_active_top_level_rows(slots2):
             values = split_top_level_values(row)
             if len(values) < 4:
                 continue
@@ -763,7 +797,12 @@ def reachable_common_part_index(
     pending = [body for body, _filename in vehicle_part_index.values()]
     while pending:
         body = pending.pop()
-        for slot_type in slot_demand_types(body):
+        # sorted(): slot_demand_types returns a set, and Python randomises str
+        # hashing per process, so unsorted iteration made this dict's insertion
+        # order vary run to run. That order reaches collect_flexbody_mesh_placements
+        # and therefore which points sample_points keeps, making previews (and the
+        # context cache) irreproducible between runs over identical input.
+        for slot_type in sorted(slot_demand_types(body)):
             if slot_type in demanded:
                 continue
             demanded.add(slot_type)
@@ -797,7 +836,7 @@ def extract_node_positions_from_array(array_text: str) -> dict[str, tuple[float,
 
 def build_node_position_index(jbeam_texts: dict[str, str]) -> dict[str, tuple[float, float, float]]:
     nodes: dict[str, tuple[float, float, float]] = {}
-    pattern = re.compile(r'"nodes"\s*:\s*\[')
+    pattern = re.compile(r'"nodes"\s*:[\s,]*\[')
     for text in jbeam_texts.values():
         for match in pattern.finditer(text):
             bracket = text.rfind("[", match.start(), match.end())
@@ -814,7 +853,9 @@ def build_node_position_index(jbeam_texts: dict[str, str]) -> dict[str, tuple[fl
 
 def build_part_body_index(jbeam_texts: dict[str, str]) -> dict[str, tuple[str, str]]:
     index: dict[str, tuple[str, str]] = {}
-    key_pattern = re.compile(r'"((?:[^"\\]|\\.)*)"\s*:\s*\{')
+    # [\s,]* tolerates the stray comma stock jbeam ships between the colon
+    # and the brace ("bluebuck_bumper_F":, {...}); the game accepts it.
+    key_pattern = re.compile(r'"((?:[^"\\]|\\.)*)"\s*:[\s,]*\{')
     for filename, text in jbeam_texts.items():
         for match in key_pattern.finditer(text):
             part_id = match.group(1)
@@ -834,12 +875,28 @@ def build_part_body_index(jbeam_texts: dict[str, str]) -> dict[str, tuple[str, s
     return index
 
 
+TOP_LEVEL_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
 def iter_top_level_rows(array_text: str) -> list[str]:
     rows: list[str] = []
     idx = 1 if array_text.startswith("[") else 0
-    while idx < len(array_text):
-        if array_text[idx] == "[":
-            end = transform_helpers.find_matching(array_text, idx, "[", "]")
+    length = len(array_text)
+    while idx < length:
+        ch = array_text[idx]
+        if ch == '"':
+            match = TOP_LEVEL_STRING_RE.match(array_text, idx)
+            idx = match.end() if match else idx + 1
+            continue
+        if ch == "[":
+            try:
+                end = transform_helpers.find_matching(array_text, idx, "[", "]")
+            except ValueError:
+                # Stock jbeam ships the odd row whose quotes/brackets never
+                # balance (usually inside a commented-out line); skip the
+                # bracket instead of failing the whole array.
+                idx += 1
+                continue
             rows.append(array_text[idx:end])
             idx = end
             continue
@@ -850,7 +907,8 @@ def iter_top_level_rows(array_text: str) -> list[str]:
 def iter_active_top_level_rows(array_text: str) -> list[str]:
     """Like iter_top_level_rows, but skips rows that are commented out
     (``//`` line comments and ``/* */`` block comments), matching what the
-    game's jbeam parser actually loads. Used by the preview payloads; the
+    game's jbeam parser actually loads. Used by the preview payloads and by
+    slot resolution (commented-out slot rows must not select parts); the
     build path keeps iter_top_level_rows so commented text is preserved
     verbatim in rewritten jbeam."""
     rows: list[str] = []
@@ -867,11 +925,15 @@ def iter_active_top_level_rows(array_text: str) -> list[str]:
             idx = length if close < 0 else close + 2
             continue
         if ch == '"':
-            match = re.compile(r'"(?:[^"\\]|\\.)*"').match(array_text, idx)
+            match = TOP_LEVEL_STRING_RE.match(array_text, idx)
             idx = match.end() if match else idx + 1
             continue
         if ch == "[":
-            end = transform_helpers.find_matching(array_text, idx, "[", "]")
+            try:
+                end = transform_helpers.find_matching(array_text, idx, "[", "]")
+            except ValueError:
+                idx += 1
+                continue
             rows.append(array_text[idx:end])
             idx = end
             continue
@@ -940,7 +1002,7 @@ def extract_slot_defs(part_body: str) -> list[SlotDef]:
 
     slots = transform_helpers.extract_named_array(part_body, "slots")
     if slots:
-        for row in iter_top_level_rows(slots):
+        for row in iter_active_top_level_rows(slots):
             values = split_top_level_values(row)
             if len(values) < 2:
                 continue
@@ -953,7 +1015,7 @@ def extract_slot_defs(part_body: str) -> list[SlotDef]:
 
     slots2 = transform_helpers.extract_named_array(part_body, "slots2")
     if slots2:
-        for row in iter_top_level_rows(slots2):
+        for row in iter_active_top_level_rows(slots2):
             values = split_top_level_values(row)
             if len(values) < 4:
                 continue
@@ -2383,7 +2445,7 @@ def hand_from_text(text: str) -> str:
 # Bump whenever context-building logic changes in a way that affects cached
 # VehicleContext content (parsing, pivots, common indexing, ...). Structural
 # dataclass changes are caught automatically via the field-name fingerprint.
-CONTEXT_CACHE_VERSION = 2  # 2: flexbody rot euler order fixed to Ry*Rx*Rz (multi-axis rows)
+CONTEXT_CACHE_VERSION = 3  # 3: stray-comma part keys indexed, malformed rows skipped
 
 
 def context_cache_path(source_zip: Path, vehicle_id: str) -> Path:
@@ -2669,9 +2731,13 @@ def load_vehicle_context(
     objects: dict[str, DaeObject] = {}
     preview_by_id: dict[str, dict[str, object]] = {}
     for dae_path in dae_paths:
-        for object_id, obj in list_dae_objects_for_file(source_zip, dae_path).items():
+        # Parse once and feed both helpers; each used to re-parse the file.
+        tree = parse_dae(source_zip, dae_path)
+        for object_id, obj in dae_objects_from_tree(
+            tree, dae_path, dae_source_zip=source_zip
+        ).items():
             objects.setdefault(object_id, obj)
-        for object_id, preview in preview_data_for_file(source_zip, dae_path).items():
+        for object_id, preview in preview_data_from_tree(tree).items():
             preview_by_id.setdefault(object_id, preview)
 
     variants: dict[str, VariantInfo] = {}
