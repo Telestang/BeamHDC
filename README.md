@@ -2,7 +2,7 @@
 
 Convert any BeamNG.drive vehicle — vanilla or mod — between left-hand drive and right-hand drive, and generate custom licence plates.
 
-**[Download BeamXP 0.2.1-alpha](https://github.com/Telestang/BeamXP/raw/main/release/BeamXP-0.2.1-alpha-windows.zip)** — extract it anywhere and run the exe.
+**[Download BeamXP 0.2.2-alpha](https://github.com/Telestang/BeamXP/raw/main/release/BeamXP-0.2.2-alpha-windows.zip)** — extract it anywhere and run the exe.
 
 *BeamXP was previously named BeamHDC (BeamNG Hand Drive Converter).*
 
@@ -47,7 +47,7 @@ The tool is new. It has been working well in my own testing, but there may be is
 
 ## Quick Start
 
-1. [Download the release zip](https://github.com/Telestang/BeamXP/raw/main/release/BeamXP-0.2.1-alpha-windows.zip), extract it, and run the exe (or run from source — see Requirements).
+1. [Download the release zip](https://github.com/Telestang/BeamXP/raw/main/release/BeamXP-0.2.2-alpha-windows.zip), extract it, and run the exe (or run from source — see Requirements).
 2. Select a source BeamNG vehicle `.zip`.
 3. If prompted, choose the vehicle model ID.
 4. Select the variants/trims you want to convert.

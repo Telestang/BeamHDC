@@ -16,12 +16,26 @@ python -m py_compile beamng_hand_drive_core.py beamng_hand_drive_tool.py blender
 ## Suggested GitHub Release Notes
 
 ```text
-v0.2.1-alpha
+v0.2.2-alpha
 
-Faster, smarter part-mode workflow: the whole vanilla ETK 800-Series
-converts in under 7 seconds per trim (see the demo in the README).
+Bug-fix and performance release: vehicles that previously failed to load
+or silently dropped parts now work, and opening a vehicle for the first
+time is dramatically faster.
 
 Highlights:
+- Fixed parts going missing on vehicles whose jbeam uses a stray comma
+  before the part body ("part":, { ... }). This hid 39 parts on the
+  Bluebuck alone (bumpers, doors, fenders, hood, headlights, mirrors,
+  door panels, trunk) and also affects the Grand Marshal, Roamer and D-Series
+- Fixed an "Unclosed [] block" error that stopped the D-Series loading
+  entirely, caused by a commented-out slot row with an unbalanced quote
+- Commented-out slot rows no longer pull in parts the game never loads
+- Much faster first-time vehicle loads: the D-Series went from ~229s to
+  ~21s, and other vehicles roughly halved. Cached loads were already
+  instant and are unchanged
+- Preview point sampling is now reproducible run to run
+
+Previous release highlights:
 - Flip Tex: un-mirrors the texture on mirrored display screens so satnav
   and infotainment content keeps its left/right reading
 - Smarter Recommend Modes, tuned against hand-verified conversions:
@@ -61,7 +75,7 @@ Keep the GitHub repository to the tool code and conversion configs. Do not put s
 Build the non-technical-user release archive with:
 
 ```powershell
-.\packaging\build_windows.ps1 -Version 0.2.1-alpha
+.\packaging\build_windows.ps1 -Version 0.2.2-alpha
 ```
 
 Confirm the generated archive contains:
