@@ -726,7 +726,7 @@ def slot_demand_types(part_body: str) -> set[str]:
     demanded: set[str] = set()
     slots = transform_helpers.extract_named_array(part_body, "slots")
     if slots:
-        for row in iter_top_level_rows(slots):
+        for row in iter_active_top_level_rows(slots):
             values = split_top_level_values(row)
             if len(values) < 2:
                 continue
@@ -735,7 +735,7 @@ def slot_demand_types(part_body: str) -> set[str]:
                 demanded.add(slot_type)
     slots2 = transform_helpers.extract_named_array(part_body, "slots2")
     if slots2:
-        for row in iter_top_level_rows(slots2):
+        for row in iter_active_top_level_rows(slots2):
             values = split_top_level_values(row)
             if len(values) < 4:
                 continue
@@ -797,7 +797,7 @@ def extract_node_positions_from_array(array_text: str) -> dict[str, tuple[float,
 
 def build_node_position_index(jbeam_texts: dict[str, str]) -> dict[str, tuple[float, float, float]]:
     nodes: dict[str, tuple[float, float, float]] = {}
-    pattern = re.compile(r'"nodes"\s*:\s*\[')
+    pattern = re.compile(r'"nodes"\s*:[\s,]*\[')
     for text in jbeam_texts.values():
         for match in pattern.finditer(text):
             bracket = text.rfind("[", match.start(), match.end())
@@ -814,7 +814,9 @@ def build_node_position_index(jbeam_texts: dict[str, str]) -> dict[str, tuple[fl
 
 def build_part_body_index(jbeam_texts: dict[str, str]) -> dict[str, tuple[str, str]]:
     index: dict[str, tuple[str, str]] = {}
-    key_pattern = re.compile(r'"((?:[^"\\]|\\.)*)"\s*:\s*\{')
+    # [\s,]* tolerates the stray comma stock jbeam ships between the colon
+    # and the brace ("bluebuck_bumper_F":, {...}); the game accepts it.
+    key_pattern = re.compile(r'"((?:[^"\\]|\\.)*)"\s*:[\s,]*\{')
     for filename, text in jbeam_texts.items():
         for match in key_pattern.finditer(text):
             part_id = match.group(1)
@@ -834,12 +836,28 @@ def build_part_body_index(jbeam_texts: dict[str, str]) -> dict[str, tuple[str, s
     return index
 
 
+TOP_LEVEL_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
 def iter_top_level_rows(array_text: str) -> list[str]:
     rows: list[str] = []
     idx = 1 if array_text.startswith("[") else 0
-    while idx < len(array_text):
-        if array_text[idx] == "[":
-            end = transform_helpers.find_matching(array_text, idx, "[", "]")
+    length = len(array_text)
+    while idx < length:
+        ch = array_text[idx]
+        if ch == '"':
+            match = TOP_LEVEL_STRING_RE.match(array_text, idx)
+            idx = match.end() if match else idx + 1
+            continue
+        if ch == "[":
+            try:
+                end = transform_helpers.find_matching(array_text, idx, "[", "]")
+            except ValueError:
+                # Stock jbeam ships the odd row whose quotes/brackets never
+                # balance (usually inside a commented-out line); skip the
+                # bracket instead of failing the whole array.
+                idx += 1
+                continue
             rows.append(array_text[idx:end])
             idx = end
             continue
@@ -850,7 +868,8 @@ def iter_top_level_rows(array_text: str) -> list[str]:
 def iter_active_top_level_rows(array_text: str) -> list[str]:
     """Like iter_top_level_rows, but skips rows that are commented out
     (``//`` line comments and ``/* */`` block comments), matching what the
-    game's jbeam parser actually loads. Used by the preview payloads; the
+    game's jbeam parser actually loads. Used by the preview payloads and by
+    slot resolution (commented-out slot rows must not select parts); the
     build path keeps iter_top_level_rows so commented text is preserved
     verbatim in rewritten jbeam."""
     rows: list[str] = []
@@ -867,11 +886,15 @@ def iter_active_top_level_rows(array_text: str) -> list[str]:
             idx = length if close < 0 else close + 2
             continue
         if ch == '"':
-            match = re.compile(r'"(?:[^"\\]|\\.)*"').match(array_text, idx)
+            match = TOP_LEVEL_STRING_RE.match(array_text, idx)
             idx = match.end() if match else idx + 1
             continue
         if ch == "[":
-            end = transform_helpers.find_matching(array_text, idx, "[", "]")
+            try:
+                end = transform_helpers.find_matching(array_text, idx, "[", "]")
+            except ValueError:
+                idx += 1
+                continue
             rows.append(array_text[idx:end])
             idx = end
             continue
@@ -940,7 +963,7 @@ def extract_slot_defs(part_body: str) -> list[SlotDef]:
 
     slots = transform_helpers.extract_named_array(part_body, "slots")
     if slots:
-        for row in iter_top_level_rows(slots):
+        for row in iter_active_top_level_rows(slots):
             values = split_top_level_values(row)
             if len(values) < 2:
                 continue
@@ -953,7 +976,7 @@ def extract_slot_defs(part_body: str) -> list[SlotDef]:
 
     slots2 = transform_helpers.extract_named_array(part_body, "slots2")
     if slots2:
-        for row in iter_top_level_rows(slots2):
+        for row in iter_active_top_level_rows(slots2):
             values = split_top_level_values(row)
             if len(values) < 4:
                 continue
@@ -2383,7 +2406,7 @@ def hand_from_text(text: str) -> str:
 # Bump whenever context-building logic changes in a way that affects cached
 # VehicleContext content (parsing, pivots, common indexing, ...). Structural
 # dataclass changes are caught automatically via the field-name fingerprint.
-CONTEXT_CACHE_VERSION = 2  # 2: flexbody rot euler order fixed to Ry*Rx*Rz (multi-axis rows)
+CONTEXT_CACHE_VERSION = 3  # 3: stray-comma part keys indexed, malformed rows skipped
 
 
 def context_cache_path(source_zip: Path, vehicle_id: str) -> Path:

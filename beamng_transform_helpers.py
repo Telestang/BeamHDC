@@ -480,7 +480,9 @@ def mask_comments_preserve_offsets(text: str) -> str:
 def extract_keyed_object(text: str, key: str) -> str | None:
     if f'"{key}"' not in text:
         return None
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*\{{')
+    # [\s,]* tolerates the stray comma stock jbeam ships between the colon
+    # and the brace ("key":, {...}); the game's lenient parser accepts it.
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:[\s,]*\{{')
     masked = mask_comments_preserve_offsets(text)
     match = pattern.search(masked)
     if match is None:
@@ -493,7 +495,7 @@ def extract_keyed_object(text: str, key: str) -> str | None:
 def extract_named_array(text: str, key: str) -> str | None:
     if f'"{key}"' not in text:
         return None
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*\[')
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:[\s,]*\[')
     masked = mask_comments_preserve_offsets(text)
     match = pattern.search(masked)
     if match is None:
@@ -540,7 +542,7 @@ def extract_part_slot_types(part_body: str) -> list[str]:
 
 
 def replace_array_region(text: str, key: str, transform) -> str:
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*\[')
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:[\s,]*\[')
     match = pattern.search(text)
     if match is None:
         return text
