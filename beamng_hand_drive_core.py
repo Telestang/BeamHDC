@@ -797,7 +797,12 @@ def reachable_common_part_index(
     pending = [body for body, _filename in vehicle_part_index.values()]
     while pending:
         body = pending.pop()
-        for slot_type in slot_demand_types(body):
+        # sorted(): slot_demand_types returns a set, and Python randomises str
+        # hashing per process, so unsorted iteration made this dict's insertion
+        # order vary run to run. That order reaches collect_flexbody_mesh_placements
+        # and therefore which points sample_points keeps, making previews (and the
+        # context cache) irreproducible between runs over identical input.
+        for slot_type in sorted(slot_demand_types(body)):
             if slot_type in demanded:
                 continue
             demanded.add(slot_type)

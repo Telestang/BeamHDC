@@ -45,5 +45,47 @@ class DaeAliasCandidateTests(unittest.TestCase):
         self.assertEqual(core.dae_alias_candidates(b'<node id="\xff\xfe"/>'), set())
 
 
+class ReachableCommonOrderTests(unittest.TestCase):
+    def test_reachable_common_index_order_is_deterministic(self) -> None:
+        # slot_demand_types returns a set; iterating it unsorted made the
+        # insertion order (and therefore preview sampling) vary per process.
+        vehicle = {
+            "acme": (
+                '"acme": {"slotType":"main","slots":[\n'
+                '["type","default","description"],\n'
+                '["zeta_slot","zeta_part",""],\n'
+                '["alpha_slot","alpha_part",""],\n'
+                '["mid_slot","mid_part",""],\n'
+                "]}",
+                "acme.jbeam",
+            )
+        }
+        common = {
+            name: (f'"{name}": {{"slotType":"{slot}"}}', f"{name}.jbeam")
+            for name, slot in (
+                ("zeta_part", "zeta_slot"),
+                ("alpha_part", "alpha_slot"),
+                ("mid_part", "mid_slot"),
+            )
+        }
+        order = list(core.reachable_common_part_index(vehicle, common))
+        self.assertEqual(order, ["alpha_part", "mid_part", "zeta_part"])
+        for _ in range(5):
+            self.assertEqual(list(core.reachable_common_part_index(vehicle, common)), order)
+
+
+class MaskCommentsCacheTests(unittest.TestCase):
+    def test_cached_mask_still_matches_a_fresh_computation(self) -> None:
+        import beamng_transform_helpers as th
+
+        text = '{"a": 1, // note "b"\n "c": [1, 2], /* "d" */ "e": "f"}'
+        first = th.mask_comments_preserve_offsets(text)
+        second = th.mask_comments_preserve_offsets(text)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), len(text))
+        th.mask_comments_preserve_offsets.cache_clear()
+        self.assertEqual(th.mask_comments_preserve_offsets(text), first)
+
+
 if __name__ == "__main__":
     unittest.main()
