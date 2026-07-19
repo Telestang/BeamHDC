@@ -464,15 +464,30 @@ def referenced_mesh_names(part_body_index: dict[str, tuple[str, str]]) -> set[st
     return meshes
 
 
-def combined_token_regex(tokens: Iterable[str]) -> re.Pattern[bytes] | None:
-    encoded = sorted(
-        {token.encode("utf-8") for token in tokens if token and len(token) >= 2},
-        key=len,
-        reverse=True,
-    )
-    if not encoded:
-        return None
-    return re.compile(b"|".join(re.escape(token) for token in encoded))
+DAE_ALIAS_ATTR_RE = re.compile(rb'(?:id|name)="([^"]*)"')
+
+
+def dae_alias_candidates(data: bytes) -> set[str]:
+    """Every id/name attribute value in a raw DAE, plus stripped forms.
+
+    A superset of what dae_node_aliases can key an object by, so using it to
+    skip files is safe: it can only ever over-select. Matching on attributes
+    rather than searching for each wanted mesh name matters a great deal --
+    a combined ``mesh1|mesh2|...`` regex over a 680 MB common.zip is O(bytes
+    x alternatives) in Python's re (no Aho-Corasick) and measured 211s on
+    pickup, versus 0.4s for one attribute pass plus a set intersection.
+    """
+    names: set[str] = set()
+    for raw in DAE_ALIAS_ATTR_RE.findall(data):
+        try:
+            value = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        names.add(value)
+        stripped = value.strip()
+        if stripped:
+            names.add(stripped)
+    return names
 
 
 def load_common_dae_objects(
@@ -480,15 +495,13 @@ def load_common_dae_objects(
     wanted_meshes: set[str],
     existing_objects: dict[str, DaeObject],
 ) -> tuple[dict[str, DaeObject], dict[str, dict[str, object]], list[str]]:
-    missing_meshes = wanted_meshes - set(existing_objects)
-    token_regex = combined_token_regex(missing_meshes)
-    if token_regex is None:
+    still_missing = wanted_meshes - set(existing_objects)
+    if not still_missing:
         return {}, {}, []
 
     found_objects: dict[str, DaeObject] = {}
     found_previews: dict[str, dict[str, object]] = {}
     found_paths: set[str] = set()
-    still_missing = set(missing_meshes)
 
     for candidate_zip in common_zip_candidates(source_zip):
         if not still_missing:
@@ -496,39 +509,46 @@ def load_common_dae_objects(
         paths = common_dae_paths(candidate_zip)
         if not paths:
             continue
-        for dae_path in paths:
-            if not still_missing:
-                break
-            try:
-                with zipfile.ZipFile(candidate_zip) as zf:
+        try:
+            zf = zipfile.ZipFile(candidate_zip)
+        except Exception:
+            continue
+        # One handle for the whole zip: reopening per DAE re-reads the
+        # central directory of a multi-hundred-MB archive every time.
+        with zf:
+            for dae_path in paths:
+                if not still_missing:
+                    break
+                try:
                     data = zf.read(dae_path)
-            except Exception:
-                continue
-            if not token_regex.search(data):
-                continue
+                except Exception:
+                    continue
+                if still_missing.isdisjoint(dae_alias_candidates(data)):
+                    continue
 
-            try:
-                file_objects = list_dae_objects_for_file(candidate_zip, dae_path)
-            except Exception:
-                continue
-            matched_ids = sorted(object_id for object_id in file_objects if object_id in still_missing)
-            if not matched_ids:
-                continue
+                try:
+                    tree = ET.ElementTree(ET.fromstring(data))
+                    file_objects = dae_objects_from_tree(
+                        tree, dae_path, dae_source_zip=candidate_zip
+                    )
+                except Exception:
+                    continue
+                matched_ids = sorted(
+                    object_id for object_id in file_objects if object_id in still_missing
+                )
+                if not matched_ids:
+                    continue
 
-            try:
-                file_previews = preview_data_for_file(candidate_zip, dae_path)
-            except Exception:
-                file_previews = {}
-            for object_id in matched_ids:
-                found_objects.setdefault(object_id, file_objects[object_id])
-                if object_id in file_previews:
-                    found_previews.setdefault(object_id, file_previews[object_id])
-                still_missing.discard(object_id)
-            found_paths.add(dae_path)
-
-        token_regex = combined_token_regex(still_missing)
-        if token_regex is None:
-            break
+                try:
+                    file_previews = preview_data_from_tree(tree)
+                except Exception:
+                    file_previews = {}
+                for object_id in matched_ids:
+                    found_objects.setdefault(object_id, file_objects[object_id])
+                    if object_id in file_previews:
+                        found_previews.setdefault(object_id, file_previews[object_id])
+                    still_missing.discard(object_id)
+                found_paths.add(dae_path)
 
     return found_objects, found_previews, sorted(found_paths)
 
@@ -542,7 +562,21 @@ def preview_data_for_file(
     dae_path: str,
     max_points_per_object: int = 350,
 ) -> dict[str, dict[str, object]]:
-    tree = parse_dae(source_zip, dae_path)
+    return preview_data_from_tree(
+        parse_dae(source_zip, dae_path),
+        max_points_per_object=max_points_per_object,
+    )
+
+
+def preview_data_from_tree(
+    tree: ET.ElementTree,
+    max_points_per_object: int = 350,
+) -> dict[str, dict[str, object]]:
+    """Preview payload from an already-parsed DAE.
+
+    Split out so callers that also need dae_objects_from_tree can parse the
+    file once instead of once per helper; a common DAE is tens of MB of XML.
+    """
     root = tree.getroot()
     library_geometries = root.find("c:library_geometries", NS)
     if library_geometries is None:
@@ -2692,9 +2726,13 @@ def load_vehicle_context(
     objects: dict[str, DaeObject] = {}
     preview_by_id: dict[str, dict[str, object]] = {}
     for dae_path in dae_paths:
-        for object_id, obj in list_dae_objects_for_file(source_zip, dae_path).items():
+        # Parse once and feed both helpers; each used to re-parse the file.
+        tree = parse_dae(source_zip, dae_path)
+        for object_id, obj in dae_objects_from_tree(
+            tree, dae_path, dae_source_zip=source_zip
+        ).items():
             objects.setdefault(object_id, obj)
-        for object_id, preview in preview_data_for_file(source_zip, dae_path).items():
+        for object_id, preview in preview_data_from_tree(tree).items():
             preview_by_id.setdefault(object_id, preview)
 
     variants: dict[str, VariantInfo] = {}
