@@ -438,6 +438,7 @@ class HandDriveToolApp(tk.Tk):
         # Box-viewer preview data for the trim on screen; ModelPreview holds
         # this by reference, so it is mutated rather than replaced.
         self.box_preview_by_id: dict[str, dict[str, object]] = {}
+        self._box_preview_config: str | None = None
         self.viewer_supports_scene = False
         self.mesh_scene_seq = 0
         self.mesh_scene_after: str | None = None
@@ -1810,39 +1811,51 @@ class HandDriveToolApp(tk.Tk):
             self._schedule_variant_detection()
 
     def _table_position(self, object_id: str) -> tuple[tuple[float, float, float], bool]:
-        """Coordinates to show for a part, and whether they vary by trim.
+        """Where the part's geometry actually sits, and whether that varies by trim.
 
-        A mesh declared by mutually exclusive parts sits somewhere different in
-        each trim, so show the position for the trim being previewed. Parts the
-        previewed trim does not use fall back to the cross-trim representative
-        on the DaeObject."""
+        These are the drawn mesh's centre, not its DAE pivot. The pivot is
+        meaningless for meshes authored in vehicle space with an identity node
+        matrix -- a whole column of engine parts read 0,0,0 while rendering
+        correctly. The box preview data is already the placed geometry for the
+        trim on screen, so it is the same number the viewer draws."""
         if self.context is None:
             return ((0.0, 0.0, 0.0), False)
         obj = self.context.objects.get(object_id)
         if obj is None:
             return ((0.0, 0.0, 0.0), False)
-        representative = ((obj.x, obj.y, obj.z), object_id in self.context.variant_dependent_meshes)
+        varies = object_id in self.context.variant_dependent_meshes
+        entry = self.box_preview_by_id.get(object_id) or self.context.preview_by_id.get(object_id)
+        centre = (entry or {}).get("center")
+        if centre is not None:
+            return (tuple(float(value) for value in centre), varies)
+        # No geometry (prop-only rows with no mesh in the DAE): fall back to
+        # the resolved pivot rather than showing nothing.
         config = self._mesh_scene_config()
-        if config is None or config not in self.context.variants:
-            return representative
-        try:
-            resolved = core.resolved_mesh_positions_for_config(self.context, config).get(object_id)
-        except Exception:
-            return representative
-        if resolved is None:
-            return representative
-        return (resolved.position, representative[1])
+        if config is not None and config in self.context.variants:
+            try:
+                resolved = core.resolved_mesh_positions_for_config(self.context, config).get(object_id)
+            except Exception:
+                resolved = None
+            if resolved is not None:
+                return (resolved.position, varies)
+        return ((obj.x, obj.y, obj.z), varies)
 
-    def _refresh_box_preview(self) -> None:
-        """Re-point the box viewer's data at the previewed trim.
+    def _refresh_box_preview(self, *, force: bool = False) -> None:
+        """Re-point the placed-geometry data at the previewed trim.
 
-        Only the fallback box viewer uses this; the GPU scene builds its own
-        geometry per config. Updated in place because ModelPreview holds the
-        dict by reference."""
-        self.box_preview_by_id.clear()
+        Feeds the fallback box viewer and the table's x/y/z columns (the GPU
+        scene builds its own geometry per config). Updated in place because
+        ModelPreview holds the dict by reference, and skipped when the trim has
+        not changed since it costs a pass over every mesh."""
         if self.context is None:
+            self.box_preview_by_id.clear()
+            self._box_preview_config = None
             return
         config = self._mesh_scene_config()
+        if not force and config == self._box_preview_config and self.box_preview_by_id:
+            return
+        self._box_preview_config = config
+        self.box_preview_by_id.clear()
         if config is None or config not in self.context.variants:
             self.box_preview_by_id.update(self.context.preview_by_id)
             return
@@ -1854,9 +1867,17 @@ class HandDriveToolApp(tk.Tk):
             self.box_preview_by_id.update(self.context.preview_by_id)
 
     def _variant_position_note(self, object_id: str) -> str:
-        """Where else this part sits, for the marked (*) rows."""
+        """Where else this part's geometry sits, for the marked (*) rows.
+
+        Geometry centres, matching the x/y/z columns -- quoting pivots here
+        would contradict them."""
         if self.context is None:
             return ""
+        baked = (self.context.preview_by_id.get(object_id) or {}).get("center")
+        obj = self.context.objects.get(object_id)
+        if baked is None or obj is None:
+            return ""
+        representative = (obj.x, obj.y, obj.z)
         by_position: dict[tuple[float, ...], list[str]] = {}
         for config_name in sorted(self.context.variants):
             try:
@@ -1866,7 +1887,13 @@ class HandDriveToolApp(tk.Tk):
             entry = resolved.get(object_id)
             if entry is None:
                 continue
-            key = tuple(round(value, 4) for value in entry.position)
+            # Same shift preview_entries_for_config applies, for one mesh:
+            # building the whole per-config mapping here would copy every
+            # mesh once per trim.
+            key = tuple(
+                round(float(baked[i]) + entry.position[i] - representative[i], 4)
+                for i in range(3)
+            )
             by_position.setdefault(key, []).append(config_name)
         if len(by_position) < 2:
             return ""
@@ -1879,6 +1906,9 @@ class HandDriveToolApp(tk.Tk):
         if self.context is None:
             return
         query = self.filter_var.get().strip().lower()
+        # The x/y/z columns read placed geometry, so make sure it matches the
+        # trim on screen before the rows are built.
+        self._refresh_box_preview()
         keep = set(self.part_tree.selection())
         previous_order = list(self.part_tree.get_children(""))
         for item in self.part_tree.get_children():

@@ -2106,11 +2106,17 @@ def apply_resolved_mesh_positions(
     objects: dict[str, DaeObject],
     preview_by_id: dict[str, dict[str, object]],
     resolved: dict[str, ResolvedMeshPosition],
+    mesh_pivots: dict[str, tuple[float, float, float]] | None = None,
 ) -> None:
     """Move each mesh to its representative position (see
     representative_mesh_positions). Flexbody previews are transformed by the
     representative trim's row matrices so rotation/scale survive; prop previews
-    are translated by the delta, matching how the engine places each kind."""
+    are translated by the delta, matching how the engine places each kind.
+
+    Mod flexbody previews additionally shed the DAE node translation, because
+    that is what the renderers do with them (see mesh_preview.build_scene).
+    Without this the preview boxes and the drawn geometry disagree by the node
+    translation on exactly those meshes."""
     for mesh, entry in resolved.items():
         obj = objects.get(mesh)
         if obj is None:
@@ -2121,7 +2127,14 @@ def apply_resolved_mesh_positions(
         if preview is None:
             continue
         if entry.matrices:
-            preview_by_id[mesh] = transform_preview_points(preview, list(entry.matrices))
+            preview = transform_preview_points(preview, list(entry.matrices))
+            if not is_game_content_zip(obj.dae_source_zip):
+                pivot = (mesh_pivots or {}).get(mesh)
+                if pivot is not None and max(abs(value) for value in pivot) > 1e-9:
+                    preview = translate_preview_points(
+                        preview, (-pivot[0], -pivot[1], -pivot[2])
+                    )
+            preview_by_id[mesh] = preview
         else:
             preview_by_id[mesh] = translate_preview_points(
                 preview,
@@ -2874,7 +2887,9 @@ def load_vehicle_context(
     # Resolving positions needs a finished context (variants, part index,
     # pivots), so it runs here rather than inline above.
     representative, variant_dependent = representative_mesh_positions(context)
-    apply_resolved_mesh_positions(context.objects, context.preview_by_id, representative)
+    apply_resolved_mesh_positions(
+        context.objects, context.preview_by_id, representative, context.mesh_pivots
+    )
     context.variant_dependent_meshes = variant_dependent
     save_vehicle_context_cache(context)
     context.loaded_from_cache = False
