@@ -24,6 +24,18 @@ All 39 vanilla ETK 800-Series trims converted to RHD in 4 minutes 30 seconds —
 
 The tool is new. It has been working well in my own testing, but there may be issues I am not aware of yet. If you find something, please take the time to report it.
 
+### Windows Defender false positive
+
+Windows Defender (and possibly other antivirus software) may flag the release exe as `Trojan:Script/Wacatac.B!ml` or similar. This is a **false positive** — [Microsoft's own page for this detection](https://www.microsoft.com/en-us/wdsi/threats/malware-encyclopedia-description?Name=Trojan:Script/Wacatac.B!ml) notes it is a broad heuristic label that can misfire.
+
+BeamXP does several things that look suspicious to an automated heuristic despite being legitimate: it reads, creates, and overwrites files in BeamNG's AppData directory and other user-selected locations; it extracts, modifies, and repackages vehicle mod archives; it creates files intended to be loaded by another application (BeamNG.drive); and it is a new, unsigned application from a small developer. Unsigned executables built with PyInstaller are a well-known common source of this specific false positive.
+
+BeamXP is source-available under the MIT license (see [License](#license)) — you can read every line that runs, or build the exe yourself from source instead of using the release download.
+
+BeamXP is currently changing fast enough that submitting a build to Microsoft for review is only useful once a version has settled, since the review applies to that exact file and each release replaces the last. Once development slows toward a stable release, I will submit a build for review to clear this for everyone on that version. In the meantime, releases are built without UPX compression, which removes one common trigger for this kind of heuristic flag.
+
+If Defender (or anything else) flags a release for you, please [open an issue](#reporting-issues) with the version number and a screenshot — that helps track which builds are affected.
+
 ## What It Does
 
 - Converts in both directions: LHD to RHD and RHD to LHD.
