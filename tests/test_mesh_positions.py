@@ -286,5 +286,25 @@ class SteeringDeltaGuardTests(unittest.TestCase):
         self.assertAlmostEqual(core.auto_delta_magnitude(context, conversion), 0.6852, places=4)
 
 
+class PositionLabelTests(unittest.TestCase):
+    def test_variant_dependent_x_is_marked(self) -> None:
+        import beamng_hand_drive_tool as tool
+
+        # All three cells carry the mark: it is the coordinate as a whole that
+        # is trim-specific, and the axis that moves is often not x.
+        self.assertEqual(
+            tool.position_labels((0.4, 1.5, -0.2), True),
+            ("0.400000 *", "1.500000 *", "-0.200000 *"),
+        )
+
+    def test_single_placement_x_is_unmarked(self) -> None:
+        import beamng_hand_drive_tool as tool
+
+        self.assertEqual(
+            tool.position_labels((0.4, 1.5, -0.2), False),
+            ("0.400000", "1.500000", "-0.200000"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

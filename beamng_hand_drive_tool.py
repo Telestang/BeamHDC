@@ -47,6 +47,22 @@ def fmt_float(value: float | None) -> str:
     return f"{value:.6f}"
 
 
+def position_labels(
+    position: tuple[float, float, float],
+    variant_dependent: bool,
+) -> tuple[str, str, str]:
+    """x/y/z cells, marked when the part sits elsewhere on other trims.
+
+    Without the marker the columns silently change meaning between rows: most
+    parts have one position, but a part declared by mutually exclusive parts
+    only has the one belonging to the trim on screen. All three cells carry
+    the mark because it is the whole coordinate that is trim-specific --
+    flagging x alone would imply x is the axis that moves, and usually it is
+    not (the D-Series gooseneck hitch shifts along y)."""
+    suffix = " *" if variant_dependent else ""
+    return tuple(f"{fmt_float(value)}{suffix}" for value in position)
+
+
 def yn_label(value: object) -> str:
     return "Y" if bool(value) else "N"
 
@@ -1641,6 +1657,9 @@ class HandDriveToolApp(tk.Tk):
         self.preview_output_hover = None
         self._remember_preview_output()
         self._schedule_mesh_scene(immediate=True)
+        # The x/y/z columns show the previewed trim's positions, so they have
+        # to follow the Config dropdown.
+        self._refresh_parts()
 
     def _selected_preview_output_name(self) -> str:
         label = (self.preview_output_hover or self.preview_output_var.get()).strip()
@@ -1783,6 +1802,52 @@ class HandDriveToolApp(tk.Tk):
         if self.variant_detection_pending:
             self._schedule_variant_detection()
 
+    def _table_position(self, object_id: str) -> tuple[tuple[float, float, float], bool]:
+        """Coordinates to show for a part, and whether they vary by trim.
+
+        A mesh declared by mutually exclusive parts sits somewhere different in
+        each trim, so show the position for the trim being previewed. Parts the
+        previewed trim does not use fall back to the cross-trim representative
+        on the DaeObject."""
+        if self.context is None:
+            return ((0.0, 0.0, 0.0), False)
+        obj = self.context.objects.get(object_id)
+        if obj is None:
+            return ((0.0, 0.0, 0.0), False)
+        representative = ((obj.x, obj.y, obj.z), object_id in self.context.variant_dependent_meshes)
+        config = self._mesh_scene_config()
+        if config is None or config not in self.context.variants:
+            return representative
+        try:
+            resolved = core.resolved_mesh_positions_for_config(self.context, config).get(object_id)
+        except Exception:
+            return representative
+        if resolved is None:
+            return representative
+        return (resolved.position, representative[1])
+
+    def _variant_position_note(self, object_id: str) -> str:
+        """Where else this part sits, for the marked (*) rows."""
+        if self.context is None:
+            return ""
+        by_position: dict[tuple[float, ...], list[str]] = {}
+        for config_name in sorted(self.context.variants):
+            try:
+                resolved = core.resolved_mesh_positions_for_config(self.context, config_name)
+            except Exception:
+                continue
+            entry = resolved.get(object_id)
+            if entry is None:
+                continue
+            key = tuple(round(value, 4) for value in entry.position)
+            by_position.setdefault(key, []).append(config_name)
+        if len(by_position) < 2:
+            return ""
+        shown = sorted(by_position.items(), key=lambda item: -len(item[1]))[:3]
+        parts = [f"x {key[0]:.4f} y {key[1]:.4f} ({len(cfgs)} trims)" for key, cfgs in shown]
+        more = "" if len(by_position) <= 3 else f", +{len(by_position) - 3} more"
+        return f" | * varies by trim: {'; '.join(parts)}{more}"
+
     def _refresh_parts(self, *, reset_view: bool = False) -> None:
         if self.context is None:
             return
@@ -1843,9 +1908,7 @@ class HandDriveToolApp(tk.Tk):
                     ),
                     fliptex_display(mode, settings.get("textureFlip")),
                     yn_label(settings.get("steeringRef")),
-                    fmt_float(obj.x),
-                    fmt_float(obj.y),
-                    fmt_float(obj.z),
+                    *position_labels(*self._table_position(object_id)),
                 ),
             )
             row_index += 1
@@ -2085,9 +2148,11 @@ class HandDriveToolApp(tk.Tk):
                     and settings.get("textureFlip")
                     else ""
                 )
+                position, varies = self._table_position(object_id)
                 self.detail_var.set(
                     f"{display_name}: {mode_label(mode)}{flip_note}, "
-                    f"full id {object_id}, x {fmt_float(obj.x)}, offset {part_offset}, dae {obj.dae_path}"
+                    f"full id {object_id}, x {fmt_float(position[0])}, offset {part_offset}, "
+                    f"dae {obj.dae_path}{self._variant_position_note(object_id) if varies else ''}"
                 )
                 return
         active = len(core.active_part_modes(self.conversion))
