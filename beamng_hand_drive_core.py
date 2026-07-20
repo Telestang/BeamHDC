@@ -4194,7 +4194,18 @@ def generated_dae_output_path(
 def source_object_position(
     context: VehicleContext,
     object_id: str,
+    config_name: str | None = None,
 ) -> tuple[float, float, float]:
+    """Where a mesh sits, in the given trim when one is known.
+
+    The DaeObject coordinate is only a representative across trims (see
+    representative_mesh_positions), so build callers pass their config: a mesh
+    declared by mutually exclusive parts sits somewhere different in each, and
+    writing the representative into one trim's jbeam would misplace it."""
+    if config_name is not None:
+        resolved = resolved_mesh_positions_for_config(context, config_name).get(object_id)
+        if resolved is not None:
+            return resolved.position
     obj = context.objects[object_id]
     return (obj.x, obj.y, obj.z)
 
@@ -4203,16 +4214,18 @@ def target_object_position(
     context: VehicleContext,
     object_id: str,
     signed_delta: float,
+    config_name: str | None = None,
 ) -> tuple[float, float, float]:
-    x, y, z = source_object_position(context, object_id)
+    x, y, z = source_object_position(context, object_id, config_name)
     return (x + signed_delta, y, z)
 
 
 def mirrored_object_position(
     context: VehicleContext,
     object_id: str,
+    config_name: str | None = None,
 ) -> tuple[float, float, float]:
-    x, y, z = source_object_position(context, object_id)
+    x, y, z = source_object_position(context, object_id, config_name)
     return (-x, y, z)
 
 
@@ -5047,25 +5060,34 @@ def write_generated_jbeam_and_configs(
                     )
                 elif object_modes.get(mesh) == MODE_MIRROR and mesh in mirrored_prop_meshes:
                     prop_row_transforms[mesh] = ("mirror", 0.0)
+            # config_name: these positions are written into ONE trim's jbeam,
+            # so they must be that trim's, not the cross-trim representative.
             prop_globals = {
                 mesh: target_object_position(
                     context,
                     mesh,
                     signed_delta_for_target(target_hand, translate_magnitudes.get(mesh, 0.0)),
+                    config_name,
                 )
                 for mesh in mesh_hits
                 if mesh in translated_prop_meshes and object_modes.get(mesh) == MODE_TRANSLATE
             }
             prop_globals.update(
                 {
-                    mesh: mirrored_object_position(context, mesh)
+                    mesh: mirrored_object_position(context, mesh, config_name)
                     for mesh in mesh_hits
                     if mesh in mirrored_prop_meshes and object_modes.get(mesh) == MODE_MIRROR
                 }
             )
+            # Structural-mirror props reach rewrite_prop_meshes_with_globals
+            # through prop_globals rather than prop_row_transforms, so this is
+            # the one build path that positions a mesh from a stored coordinate
+            # rather than the row it is rewriting.
             prop_globals.update(
                 {
-                    mesh: mirrored_object_position(context, structural_sources[mesh])
+                    mesh: mirrored_object_position(
+                        context, structural_sources[mesh], config_name
+                    )
                     for mesh in mesh_hits
                     if mesh in structural_prop_meshes
                     and object_modes.get(mesh) == MODE_MIRROR_STRUCTURAL

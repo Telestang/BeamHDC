@@ -199,6 +199,66 @@ class HiddenPlacementTests(unittest.TestCase):
         self.assertNotIn("plate", representative)
 
 
+class BuildPositionTests(unittest.TestCase):
+    """Positions written into one trim's jbeam must be that trim's.
+
+    Structural-mirror props are the one build path that positions a mesh from
+    a stored coordinate rather than the row being rewritten, so they used to
+    receive the cross-trim representative."""
+
+    def setUp(self) -> None:
+        part_index = {
+            "hitch_long": (part("hitch_long", "bed_long", "hitch", (0.0, 0.325, 0.0)), "a.jbeam"),
+            "hitch_short": (part("hitch_short", "bed_short", "hitch", (0.0, -0.03, 0.0)), "a.jbeam"),
+        }
+        self.context = make_context(
+            objects={"hitch": obj("hitch", (0.2, 3.7, 0.0))},
+            pivots={"hitch": (0.2, 3.7, 0.0)},
+            part_index=part_index,
+            variants=["long_trim", "short_trim"],
+        )
+        self.context.selected_parts_cache = {
+            "long_trim": {"parts": {"hitch_long"}, "part_slot_options": {}},
+            "short_trim": {"parts": {"hitch_short"}, "part_slot_options": {}},
+        }
+        self.context.mesh_roles_cache = {
+            "long_trim": (set(), set(), {"hitch"}),
+            "short_trim": (set(), set(), {"hitch"}),
+        }
+        self.context.selected_node_positions_cache = {"long_trim": {}, "short_trim": {}}
+
+    def test_position_follows_the_config_it_is_written_into(self) -> None:
+        long_y = core.source_object_position(self.context, "hitch", "long_trim")[1]
+        short_y = core.source_object_position(self.context, "hitch", "short_trim")[1]
+        self.assertAlmostEqual(long_y, 4.025, places=6)
+        self.assertAlmostEqual(short_y, 3.67, places=6)
+        self.assertNotAlmostEqual(long_y, short_y, places=3)
+
+    def test_mirror_and_translate_use_the_config_position(self) -> None:
+        self.assertAlmostEqual(
+            core.mirrored_object_position(self.context, "hitch", "short_trim")[1], 3.67, places=6
+        )
+        self.assertAlmostEqual(
+            core.mirrored_object_position(self.context, "hitch", "short_trim")[0], -0.2, places=6
+        )
+        self.assertAlmostEqual(
+            core.target_object_position(self.context, "hitch", 0.5, "long_trim")[0],
+            0.7,
+            places=6,
+        )
+
+    def test_without_a_config_it_falls_back_to_the_representative(self) -> None:
+        representative, _ = core.representative_mesh_positions(self.context)
+        core.apply_resolved_mesh_positions(
+            self.context.objects, self.context.preview_by_id, representative
+        )
+        self.assertAlmostEqual(
+            core.source_object_position(self.context, "hitch")[1],
+            representative["hitch"].position[1],
+            places=6,
+        )
+
+
 class SteeringDeltaGuardTests(unittest.TestCase):
     """grp_steerwheel_hub is authored at the origin and positioned entirely by
     its jbeam row. Resolving to the authored pivot would report x=0 and
