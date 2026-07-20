@@ -103,6 +103,19 @@ class MeshPlacement:
 
 
 @dataclass(frozen=True)
+class ResolvedMeshPosition:
+    """Where a mesh sits in ONE configuration.
+
+    Several placements within a single config are simultaneous instances (a
+    wheel at four corners), so position is their average -- one DaeObject
+    cannot represent four. matrices are the flexbody row matrices for that
+    config, empty when the mesh is placed only as a prop."""
+
+    position: tuple[float, float, float]
+    matrices: tuple[tuple[tuple[float, ...], ...], ...] = ()
+
+
+@dataclass(frozen=True)
 class SlotDef:
     slot_type: str
     default_part: str
@@ -159,7 +172,15 @@ class VehicleContext:
     # positions get resolved/averaged. Props anchor their mesh pivot in
     # vehicle space, so hand conversion must transform pivot positions.
     mesh_pivots: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    # Meshes whose resolved position differs between trims -- i.e. declared by
+    # parts that can never coexist. The single position on DaeObject is only a
+    # representative for these; ask resolved_mesh_positions_for_config for the
+    # value that is true in a given trim.
+    variant_dependent_meshes: set[str] = field(default_factory=set)
     selected_parts_cache: dict[str, dict[str, object]] = field(default_factory=dict)
+    # Per-config resolved positions; rebuilt on demand, never pickled (it is
+    # trims x meshes and would dwarf the rest of the cache).
+    resolved_positions_cache: dict[str, dict[str, ResolvedMeshPosition]] = field(default_factory=dict)
     mesh_roles_cache: dict[str, tuple[set[str], set[str], set[str]]] = field(default_factory=dict)
     selected_node_positions_cache: dict[str, dict[str, tuple[float, float, float]]] = field(default_factory=dict)
     part_array_cache: dict[tuple[str, str], str | None] = field(default_factory=dict)
@@ -1939,7 +1960,19 @@ def collect_prop_mesh_positions(
 def collect_flexbody_mesh_placements(
     objects: dict[str, DaeObject],
     part_body_index: dict[str, tuple[str, str]],
+    mesh_pivots: dict[str, tuple[float, float, float]] | None = None,
 ) -> tuple[dict[str, list[MeshPlacement]], set[str]]:
+    """Every flexbody placement in the whole part index, ignoring trims.
+
+    Placements from parts that can never coexist are all present here, so this
+    must NOT be used to decide where a mesh sits -- see
+    resolved_mesh_positions_for_config for that. It stays because the returned
+    positioned-mesh set (meshes any jbeam row gives an explicit pos) is a
+    whole-vehicle property the build relies on.
+
+    Positions are measured from the authored pivot: passing objects whose
+    coordinates have already been resolved would compound the placement onto
+    an already-placed mesh."""
     placements: dict[str, list[MeshPlacement]] = {}
     positioned_meshes: set[str] = set()
     for part_body, _filename in part_body_index.values():
@@ -1957,12 +1990,21 @@ def collect_flexbody_mesh_placements(
             ):
                 continue
             obj = objects[mesh]
+            pivot = (mesh_pivots or {}).get(mesh, (obj.x, obj.y, obj.z))
             matrix = flexbody_row_matrix(row)
-            position = transform_helpers.transform_point(matrix, (obj.x, obj.y, obj.z))
+            position = transform_helpers.transform_point(matrix, pivot)
             placements.setdefault(mesh, []).append(MeshPlacement(position=position, matrix=matrix))
             if vector_from_row(row, "pos") is not None:
                 positioned_meshes.add(mesh)
     return placements, positioned_meshes
+
+
+def is_far_placement(position: tuple[float, float, float]) -> bool:
+    """Whether a row parks the mesh so far out it is really being hidden.
+
+    Same threshold the preview payload uses to drop instances, so both agree
+    on what counts as present in a configuration."""
+    return math.hypot(position[0], position[1], position[2]) > PREVIEW_FAR_LIMIT
 
 
 def average_position(positions: list[tuple[float, float, float]]) -> tuple[float, float, float]:
@@ -2039,34 +2081,31 @@ def translate_preview_points(
 def apply_resolved_mesh_positions(
     objects: dict[str, DaeObject],
     preview_by_id: dict[str, dict[str, object]],
-    flexbody_placements: dict[str, list[MeshPlacement]],
-    prop_positions: dict[str, list[tuple[float, float, float]]],
+    resolved: dict[str, ResolvedMeshPosition],
 ) -> None:
-    all_positions: dict[str, list[tuple[float, float, float]]] = {}
-    for mesh, placements in flexbody_placements.items():
-        all_positions.setdefault(mesh, []).extend(placement.position for placement in placements)
-    for mesh, positions in prop_positions.items():
-        all_positions.setdefault(mesh, []).extend(positions)
-
-    for mesh, positions in all_positions.items():
+    """Move each mesh to its representative position (see
+    representative_mesh_positions). Flexbody previews are transformed by the
+    representative trim's row matrices so rotation/scale survive; prop previews
+    are translated by the delta, matching how the engine places each kind."""
+    for mesh, entry in resolved.items():
         obj = objects.get(mesh)
-        if obj is None or not positions:
+        if obj is None:
             continue
-        resolved = average_position(positions)
-        objects[mesh] = moved_object(obj, resolved)
+        objects[mesh] = moved_object(obj, entry.position)
 
         preview = preview_by_id.get(mesh)
         if preview is None:
             continue
-        if mesh in flexbody_placements:
-            preview_by_id[mesh] = transform_preview_points(
-                preview,
-                [placement.matrix for placement in flexbody_placements[mesh]],
-            )
-        elif mesh in prop_positions:
+        if entry.matrices:
+            preview_by_id[mesh] = transform_preview_points(preview, list(entry.matrices))
+        else:
             preview_by_id[mesh] = translate_preview_points(
                 preview,
-                (resolved[0] - obj.x, resolved[1] - obj.y, resolved[2] - obj.z),
+                (
+                    entry.position[0] - obj.x,
+                    entry.position[1] - obj.y,
+                    entry.position[2] - obj.z,
+                ),
             )
 
 
@@ -2445,7 +2484,7 @@ def hand_from_text(text: str) -> str:
 # Bump whenever context-building logic changes in a way that affects cached
 # VehicleContext content (parsing, pivots, common indexing, ...). Structural
 # dataclass changes are caught automatically via the field-name fingerprint.
-CONTEXT_CACHE_VERSION = 3  # 3: stray-comma part keys indexed, malformed rows skipped
+CONTEXT_CACHE_VERSION = 4  # 4: mesh positions resolved per trim, not averaged across all parts
 
 
 def context_cache_path(source_zip: Path, vehicle_id: str) -> Path:
@@ -2489,6 +2528,7 @@ def load_cached_vehicle_context(source_zip: Path, vehicle_id: str) -> VehicleCon
     context.selected_node_positions_cache = {}
     context.part_array_cache = {}
     context.variant_hands_cache = {}
+    context.resolved_positions_cache = {}
     return context
 
 
@@ -2504,6 +2544,7 @@ def save_vehicle_context_cache(context: VehicleContext) -> Path | None:
                 selected_node_positions_cache={},
                 part_array_cache={},
                 variant_hands_cache={},
+                resolved_positions_cache={},
             ),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2783,9 +2824,12 @@ def load_vehicle_context(
     )
     objects.update(prop_objects)
     preview_by_id.update(prop_previews)
-    prop_positions = collect_prop_mesh_positions(node_positions, part_body_index, mesh_pivots)
-    flexbody_placements, positioned_flexbodies = collect_flexbody_mesh_placements(objects, part_body_index)
-    apply_resolved_mesh_positions(objects, preview_by_id, flexbody_placements, prop_positions)
+    # Only the positioned-mesh set is wanted here; the placements themselves
+    # span parts that cannot coexist, so positions come from the per-config
+    # resolution below instead.
+    _placements, positioned_flexbodies = collect_flexbody_mesh_placements(
+        objects, part_body_index, mesh_pivots
+    )
     project_dir = project_dir_for(source_zip, selected_vehicle_id)
 
     context = VehicleContext(
@@ -2803,6 +2847,11 @@ def load_vehicle_context(
         jbeam_positioned_flexbodies=positioned_flexbodies,
         mesh_pivots=mesh_pivots,
     )
+    # Resolving positions needs a finished context (variants, part index,
+    # pivots), so it runs here rather than inline above.
+    representative, variant_dependent = representative_mesh_positions(context)
+    apply_resolved_mesh_positions(context.objects, context.preview_by_id, representative)
+    context.variant_dependent_meshes = variant_dependent
     save_vehicle_context_cache(context)
     context.loaded_from_cache = False
     return context
@@ -3017,13 +3066,18 @@ def likely_stock_steering_ref_ids(
     return [object_id for _score, object_id in scored]
 
 
-def selected_flexbody_mesh_positions(
+def selected_flexbody_mesh_placements(
     context: VehicleContext,
     config_name: str,
     mesh_ids: set[str],
-) -> dict[str, list[tuple[float, float, float]]]:
+) -> dict[str, list[MeshPlacement]]:
+    """Flexbody placements for the parts ONE config actually selects.
+
+    Unlike collect_flexbody_mesh_placements this never mixes parts that cannot
+    coexist. Positions are measured from the authored pivot, so it is safe to
+    call after DaeObject coordinates have been resolved."""
     selected = selected_parts_for_config(context, config_name)
-    positions: dict[str, list[tuple[float, float, float]]] = {}
+    placements: dict[str, list[MeshPlacement]] = {}
     part_slot_options = selected.get("part_slot_options", {})
     for part_id in sorted(str(item) for item in selected.get("parts", set())):
         flexbodies = part_named_array_for_context(context, part_id, "flexbodies")
@@ -3043,8 +3097,106 @@ def selected_flexbody_mesh_positions(
                 continue
             pivot = context.mesh_pivots.get(mesh, (obj.x, obj.y, obj.z))
             matrix = flexbody_row_source_matrix(row, inherited_options)
-            positions.setdefault(mesh, []).append(transform_helpers.transform_point(matrix, pivot))
-    return positions
+            placements.setdefault(mesh, []).append(
+                MeshPlacement(
+                    position=transform_helpers.transform_point(matrix, pivot),
+                    matrix=matrix,
+                )
+            )
+    return placements
+
+
+def selected_flexbody_mesh_positions(
+    context: VehicleContext,
+    config_name: str,
+    mesh_ids: set[str],
+) -> dict[str, list[tuple[float, float, float]]]:
+    return {
+        mesh: [placement.position for placement in placements]
+        for mesh, placements in selected_flexbody_mesh_placements(
+            context, config_name, mesh_ids
+        ).items()
+    }
+
+
+def resolved_mesh_positions_for_config(
+    context: VehicleContext,
+    config_name: str,
+) -> dict[str, ResolvedMeshPosition]:
+    """Where each mesh of one trim actually sits.
+
+    This is the honest answer the averaged DaeObject position cannot give: a
+    mesh declared by several mutually exclusive parts (the D-Series gooseneck
+    hitch sits in five, at two different offsets) resolves here to the offset
+    of the part THIS trim selects."""
+    cached = context.resolved_positions_cache.get(config_name)
+    if cached is not None:
+        return cached
+
+    used = used_meshes_for_config(context, config_name)
+    flex = selected_flexbody_mesh_placements(context, config_name, used)
+    props = selected_prop_mesh_positions(context, config_name, used)
+
+    resolved: dict[str, ResolvedMeshPosition] = {}
+    for mesh in used:
+        # jbeam hides a part it does not want by parking it kilometres away
+        # (astrah stows a spare licence plate at y=-4.5e6). Those rows render
+        # nothing, so averaging them in would drag the mesh off the vehicle --
+        # the preview payload discards them on the same threshold.
+        flex_placements = [
+            placement
+            for placement in flex.get(mesh, [])
+            if not is_far_placement(placement.position)
+        ]
+        points = [placement.position for placement in flex_placements]
+        points.extend(
+            position for position in props.get(mesh, []) if not is_far_placement(position)
+        )
+        if not points:
+            continue
+        resolved[mesh] = ResolvedMeshPosition(
+            position=average_position(points),
+            matrices=tuple(
+                tuple(tuple(row) for row in placement.matrix)
+                for placement in flex_placements
+            ),
+        )
+    context.resolved_positions_cache[config_name] = resolved
+    return resolved
+
+
+def representative_mesh_positions(
+    context: VehicleContext,
+) -> tuple[dict[str, ResolvedMeshPosition], set[str]]:
+    """One position per mesh for callers with no trim in hand, plus the set of
+    meshes for which that position is only a representative.
+
+    The representative is the position the mesh holds in the MOST trims, ties
+    broken by the alphabetically-first trim so it never depends on dict order.
+    A mesh placed identically everywhere -- the overwhelming majority, and
+    every steering reference measured so far -- resolves to exactly that
+    position, which is what the old whole-index average produced too.
+
+    Deliberately NOT the authored DAE pivot: shared-library meshes such as
+    grp_steerwheel_hub are authored at the origin and positioned entirely by
+    their jbeam row, so pivots would report x=0 and collapse the conversion
+    delta computed from the steering reference."""
+    grouped: dict[str, dict[tuple[float, ...], list[str]]] = {}
+    entries: dict[str, dict[tuple[float, ...], ResolvedMeshPosition]] = {}
+    for config_name in sorted(context.variants):
+        for mesh, entry in resolved_mesh_positions_for_config(context, config_name).items():
+            key = tuple(round(value, 6) for value in entry.position)
+            grouped.setdefault(mesh, {}).setdefault(key, []).append(config_name)
+            entries.setdefault(mesh, {}).setdefault(key, entry)
+
+    representative: dict[str, ResolvedMeshPosition] = {}
+    variant_dependent: set[str] = set()
+    for mesh, groups in grouped.items():
+        if len(groups) > 1:
+            variant_dependent.add(mesh)
+        winner = min(groups, key=lambda key: (-len(groups[key]), min(groups[key])))
+        representative[mesh] = entries[mesh][winner]
+    return representative, variant_dependent
 
 
 def stock_steering_positions_for_config(
