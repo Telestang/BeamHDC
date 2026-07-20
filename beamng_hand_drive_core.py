@@ -373,6 +373,30 @@ def list_dae_objects_for_path(path: Path) -> dict[str, DaeObject]:
 _game_common_zips_cache: list[Path] | None = None
 
 
+def is_game_content_zip(zip_path: Path | str | None) -> bool:
+    """Whether a DAE came from the game install rather than a mod.
+
+    Vanilla DAEs place flexbody meshes with a real node transform (the
+    D-Series gooseneck hitch node sits at y=+3.70), so that transform has to
+    be applied. Mod DAEs routinely ship a leftover Blender object transform on
+    top of vertices already in vehicle space, which the game ignores; applying
+    it drops the astra's fog light below the road. See
+    mesh_preview.build_scene."""
+    if zip_path is None:
+        return False
+    try:
+        resolved = Path(zip_path).resolve(strict=False)
+    except OSError:
+        return False
+    parts = [part.lower() for part in resolved.parts]
+    # The game keeps vehicles under <install>/content/vehicles/; mods live in
+    # the user data folder's mods/ tree.
+    for index in range(len(parts) - 1):
+        if parts[index] == "content" and parts[index + 1] == "vehicles":
+            return True
+    return False
+
+
 def beamng_game_common_zips() -> list[Path]:
     """The game install's content/vehicles/common.zip. Mod zips live in the
     user's mods folder with no sibling common.zip, yet routinely reference
@@ -5375,7 +5399,9 @@ def output_vehicle_preview_payload(
         if obj.dae_source_zip is None:
             path = Path(obj.dae_path)
             key = ("file", str(path), "")
-            entry = {"path": str(path), "dae_path": str(path)}
+            # Generated output DAEs are written by this tool with the node
+            # transform already meaning what it says.
+            entry = {"path": str(path), "dae_path": str(path), "game_content": True}
         else:
             zip_path = obj.dae_source_zip or context.source_zip
             key = ("zip", str(zip_path), obj.dae_path)
@@ -5383,6 +5409,7 @@ def output_vehicle_preview_payload(
                 "zip": str(zip_path),
                 "dae_path": obj.dae_path,
                 "path": str(extract_preview_dae(zip_path, obj.dae_path, cache_dir)),
+                "game_content": is_game_content_zip(zip_path),
             }
         index = dae_index.get(key)
         if index is None:
@@ -5543,7 +5570,13 @@ def full_vehicle_preview_payload(
         if index is None:
             index = len(dae_entries)
             dae_index[key] = index
-            dae_entries.append({"zip": str(zip_path), "dae_path": obj.dae_path})
+            dae_entries.append(
+                {
+                    "zip": str(zip_path),
+                    "dae_path": obj.dae_path,
+                    "game_content": is_game_content_zip(zip_path),
+                }
+            )
         return index
 
     def final_matrix(mesh: str, mode: str, world: list[list[float]]) -> list[list[float]]:

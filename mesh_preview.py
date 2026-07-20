@@ -315,6 +315,18 @@ class SceneData:
 MODE_PALETTE_ORDER = ["skip", "translate", "mirror", "mirrorStructural", "output"]
 
 
+def dae_is_game_content(dae_files: list, dae_index: object) -> bool:
+    """Whether this instance's DAE came from the game install.
+
+    Decides how a flexbody node's world translation is treated; see the two
+    branches in build_scene. Unknown (older payloads) is treated as mod
+    content, preserving the previous behaviour."""
+    if not isinstance(dae_index, int) or not (0 <= dae_index < len(dae_files)):
+        return False
+    entry = dae_files[dae_index]
+    return bool(isinstance(entry, dict) and entry.get("game_content"))
+
+
 def build_scene(payload: dict, cache_dir: Path | None = None) -> SceneData:
     """Assemble a SceneData from a full-vehicle preview payload.
 
@@ -366,11 +378,16 @@ def build_scene(payload: dict, cache_dir: Path | None = None) -> SceneData:
                 # node's rotation (baseRotationGlobal supplies it instead), keeps
                 # translation (pivot) and scale; re-root the subtree accordingly
                 rebase = derotated_matrix(node_own_matrix) @ np.linalg.inv(node_own_matrix)
+            elif dae_is_game_content(dae_files, dae_index):
+                # vanilla flexbodies: the node's world translation is real
+                # placement and must be applied. pickup_common.DAE puts the
+                # gooseneck hitch node at y=+3.70; dropping it threw the mesh
+                # 3.85 m, out in front of the cab and 1.76 m up.
+                rebase = np.eye(4)
             else:
-                # flexbodies: the engine keeps the node's rotation/scale but
-                # DROPS its world translation (vanilla flexbody nodes are all
-                # translation-free; mod DAEs carry leftover Blender-object
-                # translations the game provably ignores)
+                # mod flexbodies: vertices are already in vehicle space and the
+                # node carries a leftover Blender object transform the game
+                # ignores. Applying it puts the astra's fog light below the road.
                 rebase = np.eye(4)
                 rebase[:3, 3] = -node_own_matrix[:3, 3]
             node_entries = [(rebase @ mat, gid) for mat, gid in node_entries]
