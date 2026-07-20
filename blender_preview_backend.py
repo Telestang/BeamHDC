@@ -97,6 +97,17 @@ def prepare_dae_for_import(path: Path, aliases: dict[str, str], index: int, targ
     return target
 
 
+def dae_is_game_content(payload: dict, dae_index: object) -> bool:
+    """Whether this instance's DAE came from the game install rather than a
+    mod. Unknown (older payloads) is treated as mod content, preserving the
+    previous behaviour."""
+    dae_files = payload.get("dae_files", [])
+    if not isinstance(dae_index, int) or not (0 <= dae_index < len(dae_files)):
+        return False
+    entry = dae_files[dae_index]
+    return bool(isinstance(entry, dict) and entry.get("game_content"))
+
+
 def node_aliases_for_payload(payload: dict) -> list[dict[str, str]]:
     dae_files = payload.get("dae_files", [])
     aliases_by_dae: list[dict[str, str]] = [dict() for _entry in dae_files]
@@ -211,10 +222,15 @@ def main() -> None:
             continue
         # Props render from node-LOCAL geometry: the engine discards the DAE
         # node's rotation (baseRotationGlobal supplies the rest rotation),
-        # keeps translation (pivot) and scale. Flexbodies are the complement:
-        # the engine keeps the node's rotation/scale but DROPS its world
-        # translation (vanilla flexbody nodes are translation-free; mod DAEs
-        # carry leftover Blender-object translations the game ignores).
+        # keeps translation (pivot) and scale.
+        #
+        # Flexbodies keep the node's rotation/scale, and whether the world
+        # translation applies depends on where the DAE came from. Vanilla DAEs
+        # place meshes with a real node transform (pickup_common.DAE puts the
+        # gooseneck hitch at y=+3.70), so it must be applied. Mod DAEs ship
+        # vertices already in vehicle space plus a leftover Blender object
+        # transform the game ignores; applying that sinks the astra's fog
+        # light below the road. Mirrors mesh_preview.build_scene.
         rebase = Matrix.Identity(4)
         if base is not None:
             node_matrix = base.matrix_world
@@ -222,7 +238,7 @@ def main() -> None:
                 loc, _rot, scale = node_matrix.decompose()
                 derotated = Matrix.Translation(loc) @ Matrix.Diagonal((scale.x, scale.y, scale.z, 1.0))
                 rebase = derotated @ node_matrix.inverted()
-            else:
+            elif not dae_is_game_content(payload, instance.get("dae")):
                 rebase = Matrix.Translation(-node_matrix.translation)
         is_converted = instance.get("mode") not in (None, "", "skip")
         targets = [(changed_col if is_converted else unchanged_col, "matrix", instance["mesh"])]

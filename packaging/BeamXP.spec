@@ -36,7 +36,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX packs the exe with the same compression scheme malware droppers
+    # commonly use to hide payloads; heuristic AV engines key on that pattern
+    # (see the Windows Defender note in README.md's Status section).
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
