@@ -4030,12 +4030,51 @@ def auto_delta_source_refs(context: VehicleContext, conversion: dict[str, object
     ]
 
 
+STEERING_PROP_STR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def steering_column_axis_offsets(context: VehicleContext) -> list[float]:
+    """|x| of each steering column's rotation centre -- the idRef node of a
+    ``func:"steering"`` prop row, the point the wheel animation spins around.
+
+    A delta fallback only. It is NOT the primary signal because the rotation
+    centre is only as trustworthy as the mod authored it: the sheik_yaris
+    places its wheel on the right (x=-0.33) but leaves int_strw on the left
+    (x=+0.37), so trusting the node there would mirror the wheel the wrong
+    way. Where the wheel's own geometry gives a usable offset that wins; this
+    covers the case where it does not, e.g. a wheel mesh authored at the
+    origin and placed entirely by its prop row."""
+    offsets: list[float] = []
+    seen: set[str] = set()
+    for body, _filename in context.part_body_index.values():
+        props = transform_helpers.extract_named_array(body, "props")
+        if not props or '"steering"' not in props:
+            continue
+        for row in iter_active_top_level_rows(props):
+            strings = STEERING_PROP_STR_RE.findall(row)
+            if len(strings) < 5 or strings[0] != "steering":
+                continue
+            idref = strings[2]
+            if idref in seen:
+                continue
+            seen.add(idref)
+            node = context.node_positions.get(idref)
+            if node is not None and abs(node[0]) > 0.05:
+                offsets.append(abs(node[0]))
+    return offsets
+
+
 def auto_delta_magnitude(context: VehicleContext, conversion: dict[str, object]) -> float:
     offsets = [
         abs(context.objects[object_id].x)
         for object_id in auto_delta_source_refs(context, conversion)
     ]
     offset = median_value(offsets)
+    if offset is None:
+        # No steering wheel geometry far enough off-centre to measure; fall
+        # back to the steering column's rotation centre. Never overrides usable
+        # wheel geometry, so validated conversions are unaffected.
+        offset = median_value(steering_column_axis_offsets(context))
     if offset is None:
         return 0.0
     return offset * 2.0

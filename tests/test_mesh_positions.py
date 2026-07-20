@@ -286,6 +286,43 @@ class SteeringDeltaGuardTests(unittest.TestCase):
         self.assertAlmostEqual(core.auto_delta_magnitude(context, conversion), 0.6852, places=4)
 
 
+class SteeringAxisDeltaTests(unittest.TestCase):
+    """The steering column rotation centre is a delta fallback only: it must
+    fill in when the wheel geometry sits too near centre, and never override
+    a usable wheel offset (a mod can author the node on the wrong side)."""
+
+    def _context(self, wheel_x: float, node_x: float) -> core.VehicleContext:
+        steer_part = (
+            '"acme_steer": {\n'
+            '"slotType": "acme_steer",\n'
+            '"props": [\n'
+            '    ["func", "mesh", "idRef:", "idX:", "idY:"],\n'
+            '    ["steering", "acme_wheel", "strw", "strx", "stry"],\n'
+            "],\n"
+            "}"
+        )
+        ctx = make_context(
+            objects={"acme_wheel": obj("acme_wheel", (wheel_x, 0.0, 0.0))},
+            pivots={"acme_wheel": (wheel_x, 0.0, 0.0)},
+            part_index={"acme_steer": (steer_part, "a.jbeam")},
+            variants=["only"],
+        )
+        ctx.node_positions = {"strw": (node_x, 0.0, 0.0)}
+        return ctx
+
+    def test_usable_wheel_geometry_wins_over_the_node(self) -> None:
+        # Wheel at +0.33, node authored wrong at -0.40: geometry must win.
+        ctx = self._context(wheel_x=0.33, node_x=-0.40)
+        conv = {"parts": {"acme_wheel": {"steeringRef": True}}, "delta": {}}
+        self.assertAlmostEqual(core.auto_delta_magnitude(ctx, conv), 0.66, places=6)
+
+    def test_node_fills_in_when_wheel_is_centred(self) -> None:
+        # Wheel authored at origin (placed by its prop row): fall back to node.
+        ctx = self._context(wheel_x=0.0, node_x=0.40)
+        conv = {"parts": {"acme_wheel": {"steeringRef": True}}, "delta": {}}
+        self.assertAlmostEqual(core.auto_delta_magnitude(ctx, conv), 0.80, places=6)
+
+
 class PositionLabelTests(unittest.TestCase):
     def test_variant_dependent_x_is_marked(self) -> None:
         import beamng_hand_drive_tool as tool
