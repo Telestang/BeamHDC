@@ -16,13 +16,33 @@ python -m py_compile beamng_hand_drive_core.py beamng_hand_drive_tool.py blender
 ## Suggested GitHub Release Notes
 
 ```text
-v0.2.2-alpha
+v0.2.3-alpha
 
-Bug-fix and performance release: vehicles that previously failed to load
-or silently dropped parts now work, and opening a vehicle for the first
-time is dramatically faster.
+Fixes mesh placement for vehicles where the same part appears in several
+mutually exclusive fitments, and the false-positive Windows Defender flag
+some users hit on the release exe.
 
 Highlights:
+- Parts that only ever appear in ONE trim (e.g. the D-Series gooseneck
+  hitch, fitted by five mutually-exclusive parts at two different
+  positions) are now placed correctly per trim, instead of averaged
+  across every fitment that could ever hold the mesh
+- Fixed the 3D preview and Blender preview rendering some vanilla
+  flexbody meshes far from the vehicle (a DAE node-translation handling
+  bug that mixed up vanilla and mod content); mod content keeps its
+  existing correct placement
+- The parts table's X/Y/Z columns now show each part's actual placed
+  geometry centre for the trim being previewed, instead of a raw DAE
+  pivot that read 0,0,0 for a number of parts
+- The auto delta calculation now falls back to the steering column's
+  rotation centre when the steering wheel mesh itself has no usable
+  off-centre position
+- Windows Defender may flag the release exe as Trojan:Script/Wacatac.B!ml;
+  this is a known false positive for unsigned PyInstaller apps, documented
+  in the README Status section. Releases are now built without UPX
+  compression, which removes one common trigger for this class of flag
+
+Previous release highlights:
 - Fixed parts going missing on vehicles whose jbeam uses a stray comma
   before the part body ("part":, { ... }). This hid 39 parts on the
   Bluebuck alone (bumpers, doors, fenders, hood, headlights, mirrors,
@@ -34,8 +54,6 @@ Highlights:
   ~21s, and other vehicles roughly halved. Cached loads were already
   instant and are unchanged
 - Preview point sampling is now reproducible run to run
-
-Previous release highlights:
 - Flip Tex: un-mirrors the texture on mirrored display screens so satnav
   and infotainment content keeps its left/right reading
 - Smarter Recommend Modes, tuned against hand-verified conversions:
@@ -75,7 +93,7 @@ Keep the GitHub repository to the tool code and conversion configs. Do not put s
 Build the non-technical-user release archive with:
 
 ```powershell
-.\packaging\build_windows.ps1 -Version 0.2.2-alpha
+.\packaging\build_windows.ps1 -Version 0.2.3-alpha
 ```
 
 Confirm the generated archive contains:
