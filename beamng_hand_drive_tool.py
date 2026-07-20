@@ -435,6 +435,9 @@ class HandDriveToolApp(tk.Tk):
         self._preview_hover_after: str | None = None
 
         self.viewer: ModelPreview | None = None
+        # Box-viewer preview data for the trim on screen; ModelPreview holds
+        # this by reference, so it is mutated rather than replaced.
+        self.box_preview_by_id: dict[str, dict[str, object]] = {}
         self.viewer_supports_scene = False
         self.mesh_scene_seq = 0
         self.mesh_scene_after: str | None = None
@@ -1290,7 +1293,10 @@ class HandDriveToolApp(tk.Tk):
                 print(f"[preview] GPU mesh preview unavailable ({exc}); using box preview")
                 self.viewer = None
         if self.viewer is None:
-            self.viewer = ModelPreview(self.viewer_holder, self.context.preview_by_id)
+            # The box viewer reads this dict live, so it is refreshed in place
+            # whenever the previewed trim changes (see _refresh_box_preview).
+            self._refresh_box_preview()
+            self.viewer = ModelPreview(self.viewer_holder, self.box_preview_by_id)
         self.viewer.grid(row=0, column=0, sticky="nsew")
 
     def _sync_delta_to_ui(self) -> None:
@@ -1657,8 +1663,9 @@ class HandDriveToolApp(tk.Tk):
         self.preview_output_hover = None
         self._remember_preview_output()
         self._schedule_mesh_scene(immediate=True)
-        # The x/y/z columns show the previewed trim's positions, so they have
-        # to follow the Config dropdown.
+        # The x/y/z columns and the box viewer both show the previewed trim's
+        # positions, so they have to follow the Config dropdown.
+        self._refresh_box_preview()
         self._refresh_parts()
 
     def _selected_preview_output_name(self) -> str:
@@ -1825,6 +1832,26 @@ class HandDriveToolApp(tk.Tk):
         if resolved is None:
             return representative
         return (resolved.position, representative[1])
+
+    def _refresh_box_preview(self) -> None:
+        """Re-point the box viewer's data at the previewed trim.
+
+        Only the fallback box viewer uses this; the GPU scene builds its own
+        geometry per config. Updated in place because ModelPreview holds the
+        dict by reference."""
+        self.box_preview_by_id.clear()
+        if self.context is None:
+            return
+        config = self._mesh_scene_config()
+        if config is None or config not in self.context.variants:
+            self.box_preview_by_id.update(self.context.preview_by_id)
+            return
+        try:
+            self.box_preview_by_id.update(
+                core.preview_entries_for_config(self.context, config)
+            )
+        except Exception:
+            self.box_preview_by_id.update(self.context.preview_by_id)
 
     def _variant_position_note(self, object_id: str) -> str:
         """Where else this part sits, for the marked (*) rows."""

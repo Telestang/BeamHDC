@@ -3165,6 +3165,36 @@ def resolved_mesh_positions_for_config(
     return resolved
 
 
+def preview_entries_for_config(
+    context: VehicleContext,
+    config_name: str,
+) -> dict[str, dict[str, object]]:
+    """preview_by_id shifted from the representative onto one trim.
+
+    context.preview_by_id is baked once with the representative placement, so
+    for a variant-dependent mesh its box sits where that mesh lands on some
+    OTHER trim (the D-Series gooseneck hitch box is 0.61 m out on the long
+    bed). Shifting by the difference between the two resolved positions is
+    exact whenever the trims differ by translation, which is the case that
+    produces a visible offset."""
+    resolved = resolved_mesh_positions_for_config(context, config_name)
+    entries: dict[str, dict[str, object]] = dict(context.preview_by_id)
+    for mesh, entry in resolved.items():
+        preview = context.preview_by_id.get(mesh)
+        obj = context.objects.get(mesh)
+        if preview is None or obj is None:
+            continue
+        delta = (
+            entry.position[0] - obj.x,
+            entry.position[1] - obj.y,
+            entry.position[2] - obj.z,
+        )
+        if max(abs(value) for value in delta) < 1e-9:
+            continue
+        entries[mesh] = translate_preview_points(preview, delta)
+    return entries
+
+
 def representative_mesh_positions(
     context: VehicleContext,
 ) -> tuple[dict[str, ResolvedMeshPosition], set[str]]:
